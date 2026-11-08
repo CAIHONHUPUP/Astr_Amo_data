@@ -1,0 +1,69 @@
+# 我想永远记住你（Astr_Amo_data）
+
+给「我想永远陪伴你」（Astrbot_Amo_forever）配套的**轻量数据后端**。
+
+陪伴插件只负责聊天和心情，**记忆、画像、关系网、日程缓存**都在这里。
+
+## 为什么单独拆一个插件
+
+原版 memory_companion 功能很全，但也很重：五元组哈希身份、P5 鉴权、证据链、审计、
+多人格嵌套命名空间……对只服务一个陪伴机器人的场景来说用不上，维护成本还高。
+
+这个插件按同样的功能思路**独立重写**，只保留真正需要的部分：
+
+| 保留 | 砍掉 |
+| --- | --- |
+| 画像（名字/称呼/关系/备注）可读可写 | 五元组哈希 person_id、身份契约 |
+| 记忆按 bot + uid + 群存储、FTS5 检索 | P5 鉴权、attestation、权限闸门 |
+| 关系网 | 证据链、溯源审计、纠正回执 |
+| 日程/世界观缓存 | 多人格嵌套、复杂 namespace |
+| 多 bot 隔离（bot_id） | 海量测试用例、管理后台冗余功能 |
+
+## 存储位置
+
+```
+data/plugin_data/Astr_Amo_data/amo_data.db
+```
+
+SQLite + FTS5，只用标准库，不需要装任何依赖。
+
+## 给 Amo 调的接口
+
+插件实例上挂着 `mem`，Amo 拿到实例后直接 await：
+
+```python
+await plugin.mem.get_profile(bot_id, uid)
+await plugin.mem.save_profile(bot_id, uid, name="老公", relation="相恋")
+await plugin.mem.remember(bot_id, uid, "他养了一只叫团子的猫", kind="fact", importance=0.6)
+await plugin.mem.recall(bot_id, uid, "猫", limit=6)
+await plugin.mem.delete_memory(bot_id, memory_id)
+
+await plugin.mem.list_relations(bot_id)
+await plugin.mem.save_relation(bot_id, a_uid, b_uid, "朋友", "大学同学")
+await plugin.mem.delete_relation(bot_id, a_uid, b_uid)
+
+await plugin.mem.cache_get(bot_id, "schedule:2026-11-09")
+await plugin.mem.cache_set(bot_id, "schedule:2026-11-09", data, ttl=86400)
+```
+
+画像的 `name` / `alias` / `relation` / `remark` 都可以随时改写再存回去，
+`save_profile` 只更新传进来的字段，没传的保持原值。
+
+## 面板
+
+插件详情 → 查看页面：
+
+- **画像**：搜索、编辑名字/别名/关系/备注、删除（连带记忆和关系边）、查看和新增/删除记忆；
+- **关系网**：查看、添加、删除两个人之间的关系。
+
+## 配置
+
+| 配置 | 说明 |
+| --- | --- |
+| `bot_id` | 数据归属的机器人 ID，留空用 `default` |
+| `auto_create_profile` | 有人说话就自动建空画像 |
+| `max_recall` | 默认召回条数 |
+
+## 版本
+
+- 1.0.0：首版。画像可编辑、记忆读写、FTS5 检索、关系网、缓存。
