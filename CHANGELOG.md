@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.8
+
+### 修：面板聚合模式下点进画像全是空
+
+- 面板默认聚合所有 bot（`bot_id` 留空），但 `profile`/`save`/`delete` 三个接口拿空 `bot_id`
+  去查，永远查不到那条记录，于是名字、别名、关系、备注全是空的；
+- 新增 `find_profile(uid)`：跨 bot 找到这条画像属于哪个 bot，详情/保存/删除都先定位再操作；
+- `profile` 接口多返回 `bot_id`，面板保存和删除时带回去，不会再另建到别的 bot 下；
+- 新增单测 `test_find_profile_across_bots`。
+
 ## 2.0.6
 
 ### 面板修复 + 手动绑定入口

@@ -282,6 +282,23 @@ class DataStore:
             "exists": True,
         }
 
+    def find_profile(self, uid: str) -> Dict[str, Any]:
+        """跨 bot 找画像：面板默认聚合所有 bot，编辑时要先知道这条属于哪个 bot。"""
+        uid = str(uid)
+        if not uid:
+            return {}
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT bot_id FROM profiles WHERE uid=? ORDER BY updated_at DESC LIMIT 1",
+                (uid,),
+            ).fetchone()
+        if not row:
+            return {}
+        bot_id = str(row["bot_id"] or "")
+        profile = self.get_profile(bot_id, uid)
+        profile["bot_id"] = bot_id
+        return profile
+
     def save_profile(
         self,
         bot_id: str,

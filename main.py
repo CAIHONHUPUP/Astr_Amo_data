@@ -48,7 +48,7 @@ except ImportError:  # 单文件加载时的兜底
     from store import DataStore  # type: ignore
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.0.6"
+PLUGIN_VERSION = "2.0.8"
 DEFAULT_BOT_ID = "default"
 
 
@@ -458,9 +458,14 @@ class AmoDataPlugin(Star):
         uid = str(payload.get("uid") or "").strip()
         if not uid:
             return {"code": 1, "msg": "缺少 uid"}
+        if not bot_id:
+            # 面板默认聚合所有 bot，先找到这条画像属于哪个 bot，否则会读出空对象
+            found = self.store.find_profile(uid)
+            bot_id = str(found.get("bot_id") or "")
         return {
             "code": 0,
             "data": {
+                "bot_id": bot_id,
                 "profile": self.store.get_profile(bot_id, uid),
                 "memories": self.store.list_memories(bot_id, uid, 200),
             },
@@ -472,6 +477,10 @@ class AmoDataPlugin(Star):
         uid = str(payload.get("uid") or "").strip()
         if not uid:
             return {"code": 1, "msg": "缺少 uid"}
+        if not str(payload.get("bot_id") or "").strip():
+            # 改的应该是原来那条，不要另建到别的 bot 下
+            found = self.store.find_profile(uid)
+            bot_id = str(found.get("bot_id") or bot_id)
         profile = self.store.save_profile(
             bot_id, uid,
             name=payload.get("name"),
@@ -490,6 +499,9 @@ class AmoDataPlugin(Star):
         uid = str(payload.get("uid") or "").strip()
         if not uid:
             return {"code": 1, "msg": "缺少 uid"}
+        if not str(payload.get("bot_id") or "").strip():
+            found = self.store.find_profile(uid)
+            bot_id = str(found.get("bot_id") or bot_id)
         if str(payload.get("confirm") or "") not in ("1", "true", "yes"):
             return {"code": 1, "msg": "删除需要确认：confirm=1"}
         return {"code": 0, "data": self.store.delete_profile(bot_id, uid), "msg": "已删除"}

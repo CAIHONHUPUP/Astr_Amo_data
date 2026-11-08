@@ -98,6 +98,14 @@ class PersonTests(unittest.TestCase):
         self.assertEqual(items[0]["msg_count"], 2)
         self.assertEqual(items[0]["platforms"], ["QQ"])
 
+    def test_find_profile_across_bots(self):
+        # 面板聚合所有 bot，编辑时要能找到这条属于哪个 bot
+        self.store.save_profile("botA", "10001", name="阿墨", relation="相恋")
+        found = self.store.find_profile("10001")
+        self.assertEqual(found["bot_id"], "botA")
+        self.assertEqual(found["name"], "阿墨")
+        self.assertEqual(self.store.find_profile("不存在"), {})
+
     def test_old_db_gets_platform_columns(self):
         # 模拟老库：建表时没有 platform / pid
         import sqlite3

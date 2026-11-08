@@ -219,6 +219,7 @@ const bases = [
   "/api/plug/" + PLUGIN,
 ];
 let currentUid = "";
+let currentBot = "";
 
 function toast(msg, bad) {
   const el = document.getElementById("toast");
@@ -449,6 +450,7 @@ async function openProfile(uid) {
   try {
     const data = objectFrom(await call("profile", { uid })) || {};
     const p = data.profile || {};
+    currentBot = data.bot_id || "";
     document.getElementById("editor").hidden = false;
     document.getElementById("editorTitle").textContent = "编辑画像 · " + (p.name || uid);
     document.getElementById("fUid").value = uid;
@@ -497,6 +499,7 @@ document.getElementById("btnSaveProfile").addEventListener("click", async () => 
   try {
     await call("profile/save", {
       uid: currentUid,
+      bot_id: currentBot,
       name: document.getElementById("fName").value,
       alias: document.getElementById("fAlias").value,
       relation: document.getElementById("fRelation").value,
@@ -512,7 +515,7 @@ document.getElementById("btnDeleteProfile").addEventListener("click", async () =
   if (!currentUid) return;
   if (!window.confirm("删除 " + currentUid + " 的画像、记忆、关系边？不可恢复。")) return;
   try {
-    await call("profile/delete", { uid: currentUid, confirm: 1 });
+    await call("profile/delete", { uid: currentUid, bot_id: currentBot, confirm: 1 });
     toast("已删除");
     document.getElementById("editor").hidden = true;
     document.getElementById("memories").hidden = true;
