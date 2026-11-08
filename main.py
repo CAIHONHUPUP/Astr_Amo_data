@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 from astrbot.api import logger
@@ -176,6 +177,54 @@ class MemoryAPI:
         except Exception:
             return False
 
+    async def add_message(self, bot_id: str, umo: str, uid: str = "", name: str = "",
+                           role: str = "user", content: str = "") -> int:
+        try:
+            return self._store.add_message(self._bot(bot_id), umo, uid, name, role, content)
+        except Exception as exc:
+            logger.debug("[amo_data] 写聊天记录失败: %s" % exc)
+            return 0
+
+    async def list_messages(self, bot_id: str, umo: str = "", limit: int = 200) -> list:
+        try:
+            return self._store.list_messages(self._bot(bot_id), umo, limit)
+        except Exception as exc:
+            logger.debug("[amo_data] 读聊天记录失败: %s" % exc)
+            return []
+
+    async def delete_message(self, bot_id: str, message_id: int) -> bool:
+        try:
+            return self._store.delete_message(self._bot(bot_id), message_id)
+        except Exception:
+            return False
+
+    async def add_log(self, bot_id: str, level: str, tag: str, content: str) -> int:
+        try:
+            return self._store.add_log(self._bot(bot_id), level, tag, content)
+        except Exception:
+            return 0
+
+    async def list_logs(self, bot_id: str, level: str = "", limit: int = 200) -> list:
+        try:
+            return self._store.list_logs(self._bot(bot_id), level, limit)
+        except Exception:
+            return []
+
+    async def maintenance(self, bot_id: str, chat_days: int = 14, compress_after: int = 3,
+                          log_days: int = 7) -> dict:
+        """按保留策略压缩/清理：聊天先压缩再删除，日志到期删除。"""
+        try:
+            return self._store.compress_messages(self._bot(bot_id), compress_after, chat_days)
+        except Exception as exc:
+            logger.debug("[amo_data] 压缩聊天失败: %s" % exc)
+            return {}
+
+    async def purge_logs(self, bot_id: str, days: int = 7) -> int:
+        try:
+            return self._store.purge_logs(self._bot(bot_id), days)
+        except Exception:
+            return 0
+
     async def stats(self, bot_id: str) -> dict:
         try:
             return self._store.stats(self._bot(bot_id))
@@ -202,7 +251,32 @@ class AmoDataPlugin(Star):
         self.store = DataStore(self.db_path)
         self.mem = MemoryAPI(self.store)
         self._safe_register_web_apis()
+        self._loop_task = None
+        try:
+            import asyncio
+            self._loop_task = asyncio.create_task(self._maintenance_loop())
+        except Exception:
+            self._loop_task = None
         logger.info("[amo_data] 我想永远记住你 %s 已加载（%s）" % (PLUGIN_VERSION, self.db_path))
+
+    # ---------- 配置 ----------
+    def _cfg_int(self, key: str, default: int) -> int:
+        try:
+            return int(self.config.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    @property
+    def chat_days(self) -> int:
+        return max(1, self._cfg_int("chat_days", 14))
+
+    @property
+    def compress_after(self) -> int:
+        return max(1, self._cfg_int("chat_compress_after", 3))
+
+    @property
+    def log_days(self) -> int:
+        return max(1, self._cfg_int("log_days", 7))
 
     # ---------- 工具 ----------
     def _bot_id(self, payload: dict = None) -> str:
@@ -238,6 +312,15 @@ class AmoDataPlugin(Star):
             ("/relations", self.api_relations),
             ("/relation/save", self.api_relation_save),
             ("/relation/delete", self.api_relation_delete),
+            ("/messages", self.api_messages),
+            ("/message/delete", self.api_message_delete),
+            ("/message/clear", self.api_message_clear),
+            ("/logs", self.api_logs),
+            ("/log/delete", self.api_log_delete),
+            ("/log/clear", self.api_log_clear),
+            ("/schedule", self.api_schedule),
+            ("/schedule/delete", self.api_schedule_delete),
+            ("/maintenance", self.api_maintenance),
         ]
         prefixes = [PLUGIN_NAME, "Astr_Amo_data", getattr(self, "name", PLUGIN_NAME)]
         seen = set()
@@ -389,8 +472,130 @@ class AmoDataPlugin(Star):
         ok = self.store.delete_relation(bot_id, a_uid, b_uid)
         return {"code": 0 if ok else 1, "msg": "已删除" if ok else "没有这条关系"}
 
+    async def api_messages(self):
+        payload = await self._body()
+        bot_id = self._bot_id(payload)
+        umo = str(payload.get("umo") or "").strip()
+        limit = payload.get("limit", 200)
+        return {"code": 0, "data": {"items": self.store.list_messages(bot_id, umo, limit)}}
+
+    async def api_message_delete(self):
+        payload = await self._body()
+        bot_id = self._bot_id(payload)
+        try:
+            message_id = int(payload.get("id") or 0)
+        except (TypeError, ValueError):
+            message_id = 0
+        if not message_id:
+            return {"code": 1, "msg": "缺少 id"}
+        return {"code": 0, "data": {"deleted": self.store.delete_message(bot_id, message_id)}}
+
+    async def api_message_clear(self):
+        payload = await self._body()
+        bot_id = self._bot_id(payload)
+        umo = str(payload.get("umo") or "").strip()
+        if str(payload.get("confirm") or "") not in ("1", "true", "yes"):
+            return {"code": 1, "msg": "清空需要确认：confirm=1"}
+        return {"code": 0, "data": {"deleted": self.store.clear_messages(bot_id, umo)}}
+
+    async def api_logs(self):
+        payload = await self._body()
+        bot_id = self._bot_id(payload)
+        level = str(payload.get("level") or "").strip()
+        limit = payload.get("limit", 200)
+        return {"code": 0, "data": {"items": self.store.list_logs(bot_id, level, limit)}}
+
+    async def api_log_delete(self):
+        payload = await self._body()
+        bot_id = self._bot_id(payload)
+        try:
+            log_id = int(payload.get("id") or 0)
+        except (TypeError, ValueError):
+            log_id = 0
+        if not log_id:
+            return {"code": 1, "msg": "缺少 id"}
+        return {"code": 0, "data": {"deleted": self.store.delete_log(bot_id, log_id)}}
+
+    async def api_log_clear(self):
+        payload = await self._body()
+        bot_id = self._bot_id(payload)
+        if str(payload.get("confirm") or "") not in ("1", "true", "yes"):
+            return {"code": 1, "msg": "清空需要确认：confirm=1"}
+        return {"code": 0, "data": {"deleted": self.store.clear_logs(bot_id)}}
+
+    async def api_schedule(self):
+        """日程/世界观这类缓存：列出 key 和大小，点进去看内容。"""
+        payload = await self._body()
+        bot_id = self._bot_id(payload)
+        key = str(payload.get("key") or "").strip()
+        if key:
+            value = self.store.cache_get(bot_id, key)
+            return {"code": 0, "data": {"key": key, "value": value}}
+        items = []
+        for name in self.store.cache_keys(bot_id):
+            value = self.store.cache_get(bot_id, name)
+            size = 0
+            try:
+                size = len(json.dumps(value, ensure_ascii=False))
+            except Exception:
+                size = 0
+            items.append({"key": name, "size": size})
+        return {"code": 0, "data": {"items": items}}
+
+    async def api_schedule_delete(self):
+        payload = await self._body()
+        bot_id = self._bot_id(payload)
+        key = str(payload.get("key") or "").strip()
+        if not key:
+            return {"code": 1, "msg": "缺少 key"}
+        return {"code": 0, "data": {"deleted": self.store.cache_delete(bot_id, key)}}
+
+    async def api_maintenance(self):
+        """手动跑一次保留策略：压缩老聊天 + 删过期日志。"""
+        payload = await self._body()
+        bot_id = self._bot_id(payload)
+        result = {}
+        try:
+            result.update(self.store.compress_messages(bot_id, self.compress_after, self.chat_days))
+        except Exception as exc:
+            result["compress_error"] = str(exc)
+        try:
+            result["logs_purged"] = self.store.purge_logs(bot_id, self.log_days)
+        except Exception as exc:
+            result["log_error"] = str(exc)
+        return {"code": 0, "data": result}
+
+    async def _maintenance_loop(self) -> None:
+        """每小时跑一次保留策略：压缩老聊天、删过期聊天和日志。"""
+        import asyncio
+        while True:
+            try:
+                await asyncio.sleep(3600)
+                bot_id = self._bot_id({})
+                try:
+                    await self.mem.maintenance(bot_id, self.chat_days, self.compress_after, self.log_days)
+                except Exception as exc:
+                    logger.debug("[amo_data] 聊天压缩失败: %s" % exc)
+                try:
+                    await self.mem.purge_logs(bot_id, self.log_days)
+                except Exception as exc:
+                    logger.debug("[amo_data] 日志清理失败: %s" % exc)
+                try:
+                    from astrbot.core.utils.astrbot_path import get_astrbot_data_path  # noqa: F401
+                except Exception:
+                    pass
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.debug("[amo_data] 维护循环异常: %s" % exc)
+
     # ---------- 生命周期 ----------
     async def terminate(self):
+        try:
+            if self._loop_task is not None:
+                self._loop_task.cancel()
+        except Exception:
+            pass
         try:
             self.store.close()
         except Exception:
