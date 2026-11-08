@@ -122,6 +122,17 @@
       </div>
       <div id="personLinks" class="hint"></div>
       <div class="row" style="margin-top:8px">
+        <select id="linkPlatform">
+          <option value="aiocqhttp">QQ</option>
+          <option value="lark">飞书</option>
+          <option value="telegram">Telegram</option>
+          <option value="discord">Discord</option>
+        </select>
+        <input class="grow" id="linkUid" placeholder="要绑进来的 uid（比如飞书那边的 id）">
+        <button class="ghost" id="btnPersonLink">绑定</button>
+      </div>
+      <div class="hint">他把另一个平台的账号告诉你时用这个绑一下，之后就并成同一个人了。</div>
+      <div class="row" style="margin-top:8px">
         <input class="grow" id="mergePid" placeholder="要并进来的人物编号（pid）">
         <button class="ghost" id="btnPersonMerge">并进来</button>
       </div>
@@ -643,6 +654,18 @@ document.getElementById("personSearch").addEventListener("input", () => {
 document.getElementById("btnPersonClose").addEventListener("click", () => {
   document.getElementById("personDetail").hidden = true;
 });
+document.getElementById("btnPersonLink").addEventListener("click", async () => {
+  const platform = document.getElementById("linkPlatform").value;
+  const uid = (document.getElementById("linkUid").value || "").trim();
+  if (!currentPid) { toast("先在上面点一个人", true); return; }
+  if (!uid) { toast("填一下要绑定的 uid", true); return; }
+  await call("person/link", { platform: platform, uid: uid, pid: currentPid });
+  toast("已绑定");
+  document.getElementById("linkUid").value = "";
+  openPerson(currentPid);
+  loadPersons();
+});
+
 document.getElementById("btnPersonMerge").addEventListener("click", async () => {
   const dropPid = parseInt(document.getElementById("mergePid").value || "0", 10);
   if (!currentPid || !dropPid) { toast("先在上面点一个人，再填要并进来的 pid", true); return; }
