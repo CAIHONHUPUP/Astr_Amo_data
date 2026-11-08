@@ -16,5 +16,27 @@
     "description": "默认召回条数",
     "hint": "Amo 不传 limit 时用这个值。",
     "default": 6
+  },
+  "chat_days": {
+    "type": "int",
+    "description": "聊天记录保留天数",
+    "hint": "与陪伴插件一致：默认 14 天。超过就压缩/删除。",
+    "default": 14
+  },
+  "chat_compress_after": {
+    "type": "int",
+    "description": "多少天后压缩聊天",
+    "hint": "默认 3 天：更早的原始记录按天压成一条摘要，省空间但还能回看。",
+    "default": 3
+  },
+  "log_days": {
+    "type": "int",
+    "description": "运行日志保留天数",
+    "default": 7
+  },
+  "min_importance": {
+    "type": "float",
+    "description": "记忆默认重要度",
+    "default": 0.5
   }
 }
