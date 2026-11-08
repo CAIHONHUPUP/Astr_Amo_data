@@ -1,0 +1,20 @@
+{
+  "bot_id": {
+    "type": "string",
+    "description": "数据归属的机器人 ID",
+    "hint": "留空用 default。同一个 QQ 号在不同 bot 下是独立画像和独立记忆；Amo 传 bot_id 时以它为准。",
+    "default": "default"
+  },
+  "auto_create_profile": {
+    "type": "bool",
+    "description": "聊天时自动建画像",
+    "hint": "打开后只要有人说话就会建一条空画像，方便在面板里补名字和关系。",
+    "default": true
+  },
+  "max_recall": {
+    "type": "int",
+    "description": "默认召回条数",
+    "hint": "Amo 不传 limit 时用这个值。",
+    "default": 6
+  }
+}
