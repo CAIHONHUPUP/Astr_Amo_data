@@ -48,7 +48,7 @@ except ImportError:  # 单文件加载时的兜底
     from store import DataStore  # type: ignore
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.0.0"
+PLUGIN_VERSION = "2.0.2"
 DEFAULT_BOT_ID = "default"
 
 
@@ -278,9 +278,24 @@ class AmoDataPlugin(Star):
         return max(1, self._cfg_int("log_days", 7))
 
     # ---------- 工具 ----------
-    def _bot_id(self, payload: dict = None) -> str:
+    def _bot_id(self, payload: dict = None, write: bool = False) -> str:
+        """读：留空表示所有 bot；写：留空时自动落到唯一的 bot，多个 bot 才用 default。"""
         data = payload or {}
-        return str(data.get("bot_id") or self.config.get("bot_id") or DEFAULT_BOT_ID)
+        value = str(data.get("bot_id") or "").strip()
+        if value:
+            return value
+        conf = str(self.config.get("bot_id") or "").strip()
+        if conf and conf != DEFAULT_BOT_ID:
+            return conf
+        if not write:
+            return ""
+        try:
+            ids = self.store.bot_ids()
+        except Exception:
+            ids = []
+        if len(ids) == 1:
+            return ids[0]
+        return conf or DEFAULT_BOT_ID
 
     async def _body(self) -> dict:
         try:
@@ -362,6 +377,7 @@ class AmoDataPlugin(Star):
                 "bot_id": bot_id,
                 "db": self.db_path,
                 "counts": self.store.stats(bot_id),
+                "bots": self.store.bot_ids(),
             },
         }
 
@@ -387,7 +403,7 @@ class AmoDataPlugin(Star):
 
     async def api_profile_save(self):
         payload = await self._body()
-        bot_id = self._bot_id(payload)
+        bot_id = self._bot_id(payload, write=True)
         uid = str(payload.get("uid") or "").strip()
         if not uid:
             return {"code": 1, "msg": "缺少 uid"}
@@ -402,7 +418,7 @@ class AmoDataPlugin(Star):
 
     async def api_profile_delete(self):
         payload = await self._body()
-        bot_id = self._bot_id(payload)
+        bot_id = self._bot_id(payload, write=True)
         uid = str(payload.get("uid") or "").strip()
         if not uid:
             return {"code": 1, "msg": "缺少 uid"}
@@ -423,7 +439,7 @@ class AmoDataPlugin(Star):
 
     async def api_memory_save(self):
         payload = await self._body()
-        bot_id = self._bot_id(payload)
+        bot_id = self._bot_id(payload, write=True)
         uid = str(payload.get("uid") or "").strip()
         content = str(payload.get("content") or "").strip()
         if not uid or not content:
@@ -456,7 +472,7 @@ class AmoDataPlugin(Star):
 
     async def api_relation_save(self):
         payload = await self._body()
-        bot_id = self._bot_id(payload)
+        bot_id = self._bot_id(payload, write=True)
         a_uid = str(payload.get("a_uid") or "").strip()
         b_uid = str(payload.get("b_uid") or "").strip()
         if not a_uid or not b_uid:
@@ -470,7 +486,7 @@ class AmoDataPlugin(Star):
 
     async def api_relation_delete(self):
         payload = await self._body()
-        bot_id = self._bot_id(payload)
+        bot_id = self._bot_id(payload, write=True)
         a_uid = str(payload.get("a_uid") or "").strip()
         b_uid = str(payload.get("b_uid") or "").strip()
         if not a_uid or not b_uid:
@@ -487,7 +503,7 @@ class AmoDataPlugin(Star):
 
     async def api_message_delete(self):
         payload = await self._body()
-        bot_id = self._bot_id(payload)
+        bot_id = self._bot_id(payload, write=True)
         try:
             message_id = int(payload.get("id") or 0)
         except (TypeError, ValueError):
@@ -498,7 +514,7 @@ class AmoDataPlugin(Star):
 
     async def api_message_clear(self):
         payload = await self._body()
-        bot_id = self._bot_id(payload)
+        bot_id = self._bot_id(payload, write=True)
         umo = str(payload.get("umo") or "").strip()
         if str(payload.get("confirm") or "") not in ("1", "true", "yes"):
             return {"code": 1, "msg": "清空需要确认：confirm=1"}
@@ -513,7 +529,7 @@ class AmoDataPlugin(Star):
 
     async def api_log_delete(self):
         payload = await self._body()
-        bot_id = self._bot_id(payload)
+        bot_id = self._bot_id(payload, write=True)
         try:
             log_id = int(payload.get("id") or 0)
         except (TypeError, ValueError):
@@ -524,7 +540,7 @@ class AmoDataPlugin(Star):
 
     async def api_log_clear(self):
         payload = await self._body()
-        bot_id = self._bot_id(payload)
+        bot_id = self._bot_id(payload, write=True)
         if str(payload.get("confirm") or "") not in ("1", "true", "yes"):
             return {"code": 1, "msg": "清空需要确认：confirm=1"}
         return {"code": 0, "data": {"deleted": self.store.clear_logs(bot_id)}}
@@ -550,7 +566,7 @@ class AmoDataPlugin(Star):
 
     async def api_schedule_delete(self):
         payload = await self._body()
-        bot_id = self._bot_id(payload)
+        bot_id = self._bot_id(payload, write=True)
         key = str(payload.get("key") or "").strip()
         if not key:
             return {"code": 1, "msg": "缺少 key"}
@@ -559,7 +575,7 @@ class AmoDataPlugin(Star):
     async def api_maintenance(self):
         """手动跑一次保留策略：压缩老聊天 + 删过期日志。"""
         payload = await self._body()
-        bot_id = self._bot_id(payload)
+        bot_id = self._bot_id(payload, write=True)
         result = {}
         try:
             result.update(self.store.compress_messages(bot_id, self.compress_after, self.chat_days))
