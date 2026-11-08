@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.0.4
+
+### 新增：同一个人在 QQ 和飞书说的话并到一起
+
+- 新增「人物」概念：`persons` + `person_links` 两张表，一个 `pid` 下面可以挂多个平台身份
+  （`aiocqhttp` / `lark` / `telegram` …），身份仍用平台原始 uid，不做哈希；
+- `add_message` / `save_profile` 都会带上平台，消息自动归到对应人物；
+- **同名自动合并**：同一个 bot 里、名字归一化后完全一样、且只命中一个人时自动并；
+  命中多个人就不并（宁可少并，不可并错），面板可手动合并 / 解绑；
+- 新增接口：`resolve_person` / `person_context` / `list_persons` / `person_detail` /
+  `person_link` / `person_unlink` / `person_merge`；
+- 面板新增「人物」页签：看每个人绑了哪些平台、跨平台最近聊天记录、解绑、合并；
+- 老库自动补列（`messages.platform`、`messages.pid`），不用手动迁移。
+
 ## 2.0.2
 
 ### 修复：面板显示「没有任何数据」

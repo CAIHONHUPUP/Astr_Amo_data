@@ -48,7 +48,7 @@ except ImportError:  # 单文件加载时的兜底
     from store import DataStore  # type: ignore
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.0.2"
+PLUGIN_VERSION = "2.0.4"
 DEFAULT_BOT_ID = "default"
 
 
@@ -74,13 +74,20 @@ class MemoryAPI:
             return {}
 
     async def save_profile(self, bot_id: str, uid: str, name=None, alias=None,
-                           relation=None, remark=None) -> dict:
-        """Amo 改完称呼/关系直接调这个存回去；只传要改的字段即可。"""
+                           relation=None, remark=None, platform: str = "") -> dict:
+        """Amo 改完称呼/关系直接调这个存回去；只传要改的字段即可。
+
+        带上 platform 时顺带把这个身份记进人物表，QQ / 飞书同名会自动并成一个人。
+        """
         try:
-            return self._store.save_profile(
+            profile = self._store.save_profile(
                 self._bot(bot_id), uid,
                 name=name, alias=alias, relation=relation, remark=remark,
             )
+            if platform:
+                display = str(name or profile.get("name") or "")
+                self._store.resolve_person(self._bot(bot_id), platform, uid, display)
+            return profile
         except Exception as exc:
             logger.debug("[amo_data] 保存画像失败: %s" % exc)
             return {}
@@ -178,9 +185,11 @@ class MemoryAPI:
             return False
 
     async def add_message(self, bot_id: str, umo: str, uid: str = "", name: str = "",
-                           role: str = "user", content: str = "") -> int:
+                           role: str = "user", content: str = "", platform: str = "") -> int:
         try:
-            return self._store.add_message(self._bot(bot_id), umo, uid, name, role, content)
+            return self._store.add_message(
+                self._bot(bot_id), umo, uid, name, role, content, platform=platform
+            )
         except Exception as exc:
             logger.debug("[amo_data] 写聊天记录失败: %s" % exc)
             return 0
@@ -230,6 +239,57 @@ class MemoryAPI:
             return self._store.stats(self._bot(bot_id))
         except Exception:
             return {}
+
+    # ---------- 人物：跨平台身份合并 ----------
+    async def resolve_person(self, bot_id: str, platform: str, uid: str, name: str = "") -> int:
+        """Amo 每次说话前调一次：拿到这个 (平台, uid) 的人物 pid，同名自动并。"""
+        try:
+            return self._store.resolve_person(self._bot(bot_id), platform, uid, name)
+        except Exception as exc:
+            logger.debug("[amo_data] 认人失败: %s" % exc)
+            return 0
+
+    async def person_context(self, bot_id: str, platform: str, uid: str, limit: int = 8) -> dict:
+        """Amo 建提示词时调：这个人在别的平台说过什么，一起带回去。"""
+        try:
+            return self._store.person_context(self._bot(bot_id), platform, uid, limit)
+        except Exception as exc:
+            logger.debug("[amo_data] 跨平台上下文失败: %s" % exc)
+            return {}
+
+    async def list_persons(self, bot_id: str = "", keyword: str = "", limit: int = 100) -> list:
+        try:
+            return self._store.list_persons(self._bot(bot_id), keyword, limit)
+        except Exception as exc:
+            logger.debug("[amo_data] 列人物失败: %s" % exc)
+            return []
+
+    async def person_detail(self, bot_id: str, pid: int) -> dict:
+        try:
+            return self._store.person_detail(self._bot(bot_id), int(pid))
+        except Exception:
+            return {}
+
+    async def person_link(self, bot_id: str, platform: str, uid: str,
+                          pid: int = 0, name: str = "") -> int:
+        try:
+            return self._store.link_identity(self._bot(bot_id), platform, uid, pid, name)
+        except Exception as exc:
+            logger.debug("[amo_data] 绑定身份失败: %s" % exc)
+            return 0
+
+    async def person_unlink(self, bot_id: str, platform: str, uid: str) -> bool:
+        try:
+            return self._store.unlink_identity(self._bot(bot_id), platform, uid)
+        except Exception:
+            return False
+
+    async def person_merge(self, bot_id: str, keep_pid: int, drop_pid: int) -> bool:
+        try:
+            return self._store.merge_persons(self._bot(bot_id), keep_pid, drop_pid)
+        except Exception as exc:
+            logger.debug("[amo_data] 合并人物失败: %s" % exc)
+            return False
 
 
 class AmoDataPlugin(Star):
@@ -320,6 +380,11 @@ class AmoDataPlugin(Star):
             ("/profile", self.api_profile),
             ("/profile/save", self.api_profile_save),
             ("/profile/delete", self.api_profile_delete),
+            ("/persons", self.api_persons),
+            ("/person", self.api_person),
+            ("/person/link", self.api_person_link),
+            ("/person/unlink", self.api_person_unlink),
+            ("/person/merge", self.api_person_merge),
             ("/memories", self.api_memories),
             ("/memory/save", self.api_memory_save),
             ("/memory/delete", self.api_memory_delete),
@@ -414,6 +479,9 @@ class AmoDataPlugin(Star):
             relation=payload.get("relation"),
             remark=payload.get("remark"),
         )
+        platform = str(payload.get("platform") or "").strip()
+        if platform:
+            self.store.resolve_person(bot_id, platform, uid, str(profile.get("name") or ""))
         return {"code": 0, "data": profile, "msg": "已保存"}
 
     async def api_profile_delete(self):
@@ -425,6 +493,59 @@ class AmoDataPlugin(Star):
         if str(payload.get("confirm") or "") not in ("1", "true", "yes"):
             return {"code": 1, "msg": "删除需要确认：confirm=1"}
         return {"code": 0, "data": self.store.delete_profile(bot_id, uid), "msg": "已删除"}
+
+    async def api_persons(self):
+        payload = await self._body()
+        bot_id = self._bot_id(payload)
+        keyword = str(payload.get("keyword") or payload.get("q") or "").strip()
+        return {"code": 0, "data": {"items": self.store.list_persons(bot_id, keyword, 300)}}
+
+    async def api_person(self):
+        payload = await self._body()
+        bot_id = self._bot_id(payload)
+        pid = int(payload.get("pid") or 0)
+        platform = str(payload.get("platform") or "").strip()
+        uid = str(payload.get("uid") or "").strip()
+        if not pid and platform and uid:
+            detail = self.store.person_of(bot_id, platform, uid)
+        else:
+            detail = self.store.person_detail(bot_id, pid) if pid else {}
+        if not detail:
+            return {"code": 1, "msg": "没找到这个人"}
+        return {"code": 0, "data": detail}
+
+    async def api_person_link(self):
+        payload = await self._body()
+        bot_id = self._bot_id(payload, write=True)
+        platform = str(payload.get("platform") or "").strip()
+        uid = str(payload.get("uid") or "").strip()
+        pid = int(payload.get("pid") or 0)
+        if not uid:
+            return {"code": 1, "msg": "缺少 uid"}
+        new_pid = self.store.link_identity(
+            bot_id, platform, uid, pid, str(payload.get("name") or "")
+        )
+        return {"code": 0, "data": {"pid": new_pid}, "msg": "已绑定"}
+
+    async def api_person_unlink(self):
+        payload = await self._body()
+        bot_id = self._bot_id(payload, write=True)
+        platform = str(payload.get("platform") or "").strip()
+        uid = str(payload.get("uid") or "").strip()
+        if not uid:
+            return {"code": 1, "msg": "缺少 uid"}
+        ok = self.store.unlink_identity(bot_id, platform, uid)
+        return {"code": 0 if ok else 1, "data": {"ok": ok}, "msg": "已解绑" if ok else "没找到这个身份"}
+
+    async def api_person_merge(self):
+        payload = await self._body()
+        bot_id = self._bot_id(payload, write=True)
+        keep_pid = int(payload.get("keep_pid") or 0)
+        drop_pid = int(payload.get("drop_pid") or 0)
+        if not keep_pid or not drop_pid or keep_pid == drop_pid:
+            return {"code": 1, "msg": "keep_pid 和 drop_pid 必须是两个不同的人物"}
+        ok = self.store.merge_persons(bot_id, keep_pid, drop_pid)
+        return {"code": 0 if ok else 1, "data": {"ok": ok}, "msg": "已合并" if ok else "合并失败"}
 
     async def api_memories(self):
         payload = await self._body()
@@ -499,7 +620,14 @@ class AmoDataPlugin(Star):
         bot_id = self._bot_id(payload)
         umo = str(payload.get("umo") or "").strip()
         limit = payload.get("limit", 200)
-        return {"code": 0, "data": {"items": self.store.list_messages(bot_id, umo, limit)}}
+        try:
+            pid = int(payload.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        platform = str(payload.get("platform") or "").strip()
+        return {"code": 0, "data": {
+            "items": self.store.list_messages(bot_id, umo, limit, pid=pid, platform=platform)
+        }}
 
     async def api_message_delete(self):
         payload = await self._body()

@@ -31,11 +31,12 @@
   .item:hover { border-color:#e0d3e6; }
   .item .name { font-weight:600; font-size:13px; }
   .item .sub { font-size:11px; color:var(--muted); margin-top:2px; word-break:break-all; }
-  .msg { padding:7px 0; border-bottom:1px dashed var(--line); display:flex; gap:8px; align-items:flex-start; }
+  .msg { padding:7px 0; border-bottom:1px dashed var(--line); display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap; }
   .msg:last-child { border-bottom:none; }
-  .msg .who { font-size:11px; color:var(--muted); white-space:nowrap; min-width:64px; }
-  .msg .txt { flex:1; font-size:13px; word-break:break-word; }
-  .msg .time { font-size:11px; color:var(--muted); white-space:nowrap; }
+  /* 名字太长会把正文挤成一列竖排：限宽 + 省略号，正文自己会换行 */
+  .msg .who { font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:56px; max-width:34%; flex:0 0 auto; }
+  .msg .txt { flex:1 1 120px; min-width:0; font-size:13px; word-break:break-word; overflow-wrap:anywhere; }
+  .msg .time { font-size:11px; color:var(--muted); white-space:nowrap; flex:0 0 auto; margin-left:auto; }
   .empty { color:var(--muted); font-size:12px; padding:10px 0; }
   .toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%); background:rgba(44,36,48,.92); color:#fff; padding:8px 14px; border-radius:8px; font-size:12px; opacity:0; transition:.2s; pointer-events:none; }
   .toast.show { opacity:1; }
@@ -50,6 +51,7 @@
 
 <nav>
   <button class="active" data-tab="profiles">画像</button>
+  <button data-tab="persons">人物</button>
   <button data-tab="relations">关系网</button>
   <button data-tab="chat">聊天</button>
   <button data-tab="schedule">日程</button>
@@ -100,6 +102,31 @@
         <input class="grow" id="newMem" placeholder="例如：他养了一只叫团子的猫">
         <button class="primary" id="btnAddMem">记住</button>
       </div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-persons">
+    <div class="card">
+      <div class="row">
+        <input class="grow" id="personSearch" placeholder="搜名字 / uid / 平台">
+        <button class="ghost" id="btnPersonReload">刷新</button>
+      </div>
+      <div class="hint">同一个人在 QQ 和飞书说了什么，都会并到这一条下面；名字一样会自动并，并错了点进去解绑。</div>
+    </div>
+    <div class="list" id="personList"></div>
+
+    <div class="card" id="personDetail" hidden>
+      <div class="row">
+        <strong class="grow" id="personTitle">人物</strong>
+        <button class="ghost" id="btnPersonClose">关闭</button>
+      </div>
+      <div id="personLinks" class="hint"></div>
+      <div class="row" style="margin-top:8px">
+        <input class="grow" id="mergePid" placeholder="要并进来的人物编号（pid）">
+        <button class="ghost" id="btnPersonMerge">并进来</button>
+      </div>
+      <div class="hint">合并后身份、聊天记录、记忆都归到当前这条，对方那条会被删掉。</div>
+      <div id="personRecent" style="margin-top:8px"></div>
     </div>
   </section>
 
@@ -266,6 +293,7 @@ function bridge() {
 
 const WRITE_ACTIONS = new Set([
   "profile/save", "profile/delete", "memory/save", "memory/delete",
+  "person/link", "person/unlink", "person/merge",
   "relation/save", "relation/delete", "message/delete", "message/clear",
   "log/delete", "log/clear", "schedule/delete", "maintenance",
 ]);
@@ -353,6 +381,7 @@ document.querySelectorAll("nav button").forEach((btn) => {
     document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b === btn));
     document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + btn.dataset.tab));
     const tab = btn.dataset.tab;
+    if (tab === "persons") loadPersons();
     if (tab === "relations") loadRelations();
     if (tab === "chat") loadChat();
     if (tab === "schedule") loadSchedule();
@@ -506,6 +535,126 @@ document.getElementById("search").addEventListener("input", () => {
   window._st = setTimeout(loadProfiles, 250);
 });
 
+/* ---------- 人物（跨平台合并） ---------- */
+let currentPid = 0;
+
+function platformChips(links) {
+  const wrap = document.createElement("span");
+  wrap.className = "badge";
+  const labels = (links || []).map((item) => item.label || item.platform || "未知");
+  wrap.textContent = labels.length ? labels.join(" / ") : "未绑定";
+  return wrap;
+}
+
+async function loadPersons() {
+  const box = document.getElementById("personList");
+  box.textContent = "读取中…";
+  try {
+    const keyword = (document.getElementById("personSearch").value || "").trim();
+    const data = objectFrom(await call("persons", keyword ? { keyword } : undefined)) || {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    box.textContent = "";
+    if (!items.length) { box.innerHTML = '<div class="empty">还没有人物记录，等对方在 QQ 或飞书上说句话就会自动建。</div>'; return; }
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "item";
+      const left = document.createElement("div");
+      left.className = "grow";
+      const name = document.createElement("div");
+      name.className = "name";
+      name.textContent = (item.name || "未命名") + " · pid " + item.pid;
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      const ids = (item.links || []).map((link) => (link.label || link.platform) + " " + link.uid);
+      sub.textContent = (ids.join(" ｜ ") || "未绑定身份") + " · 消息 " + (item.msg_count || 0);
+      left.appendChild(name); left.appendChild(sub);
+      row.appendChild(left);
+      row.appendChild(platformChips(item.links));
+      row.addEventListener("click", () => openPerson(item.pid));
+      box.appendChild(row);
+    });
+  } catch (error) {
+    box.textContent = "读取失败：" + error.message;
+  }
+}
+
+async function openPerson(pid) {
+  currentPid = pid;
+  try {
+    const data = objectFrom(await call("person", { pid })) || {};
+    const card = document.getElementById("personDetail");
+    card.hidden = false;
+    document.getElementById("personTitle").textContent =
+      (data.name || "未命名") + " · pid " + data.pid + " · 消息 " + (data.msg_count || 0);
+    const linkBox = document.getElementById("personLinks");
+    linkBox.textContent = "";
+    (data.links || []).forEach((link) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.style.marginTop = "6px";
+      const text = document.createElement("span");
+      text.className = "grow";
+      text.textContent = (link.label || link.platform) + " · " + link.uid + (link.name ? " · " + link.name : "");
+      const unbind = document.createElement("button");
+      unbind.className = "ghost danger";
+      unbind.textContent = "解绑";
+      unbind.addEventListener("click", async () => {
+        if (!confirm("解绑后它单独算一个人，聊天记录不会删。继续？")) return;
+        await call("person/unlink", { platform: link.platform, uid: link.uid });
+        toast("已解绑");
+        openPerson(pid);
+        loadPersons();
+      });
+      row.appendChild(text); row.appendChild(unbind);
+      linkBox.appendChild(row);
+    });
+    const recentBox = document.getElementById("personRecent");
+    recentBox.textContent = "";
+    const messages = (data.recent || []);
+    if (!messages.length) {
+      recentBox.innerHTML = '<div class="empty">还没有共同聊天记录。</div>';
+      return;
+    }
+    messages.slice().reverse().forEach((msg) => {
+      const line = document.createElement("div");
+      line.className = "msg";
+      const who = document.createElement("div");
+      who.className = "who";
+      who.textContent = (msg.label || msg.platform || "") + (msg.role === "bot" ? " · 她" : " · " + (msg.name || msg.uid));
+      const txt = document.createElement("div");
+      txt.className = "txt";
+      txt.textContent = msg.content;
+      const time = document.createElement("div");
+      time.className = "time";
+      time.textContent = fmtTime(msg.created_at);
+      line.appendChild(who); line.appendChild(txt); line.appendChild(time);
+      recentBox.appendChild(line);
+    });
+  } catch (error) {
+    toast("读取失败：" + error.message, true);
+  }
+}
+
+document.getElementById("btnPersonReload").addEventListener("click", loadPersons);
+document.getElementById("personSearch").addEventListener("input", () => {
+  clearTimeout(window._pt);
+  window._pt = setTimeout(loadPersons, 250);
+});
+document.getElementById("btnPersonClose").addEventListener("click", () => {
+  document.getElementById("personDetail").hidden = true;
+});
+document.getElementById("btnPersonMerge").addEventListener("click", async () => {
+  const dropPid = parseInt(document.getElementById("mergePid").value || "0", 10);
+  if (!currentPid || !dropPid) { toast("先在上面点一个人，再填要并进来的 pid", true); return; }
+  if (dropPid === currentPid) { toast("不能并到自己", true); return; }
+  if (!confirm("合并后对方那条会被删掉，身份和记录都并到当前这条。继续？")) return;
+  const result = await call("person/merge", { keep_pid: currentPid, drop_pid: dropPid });
+  toast(result.msg || "已合并");
+  document.getElementById("mergePid").value = "";
+  openPerson(currentPid);
+  loadPersons();
+});
+
 /* ---------- 关系网 ---------- */
 async function loadRelations() {
   const box = document.getElementById("relList");
@@ -580,13 +729,15 @@ async function loadChat() {
       row.className = "msg";
       const who = document.createElement("div");
       who.className = "who";
-      who.textContent = item.role === "bot" ? "她" : (item.name || item.uid || "对方");
+      const plat = item.label ? item.label + " · " : "";
+      who.textContent = item.role === "bot" ? "她" : (plat + (item.name || item.uid || "对方"));
       const txt = document.createElement("div");
       txt.className = "txt";
       txt.textContent = item.content;
       const time = document.createElement("div");
       time.className = "time";
       time.textContent = fmtTime(item.created_at);
+      if (item.compressed) who.textContent = "摘要 · " + who.textContent;
       const del = document.createElement("button");
       del.className = "ghost";
       del.textContent = "删";

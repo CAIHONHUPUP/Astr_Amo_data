@@ -22,6 +22,7 @@
 | 关系网 | 证据链、溯源审计、纠正回执 |
 | 日程/世界观缓存 | 多人格嵌套、复杂 namespace |
 | 多 bot 隔离（bot_id） | 海量测试用例、管理后台冗余功能 |
+| 同一个人跨平台合并（QQ / 飞书 / Telegram…） | 跨平台账号密码、OAuth、统一登录 |
 
 ## 存储位置
 
@@ -46,6 +47,9 @@ await plugin.mem.list_relations(bot_id)
 await plugin.mem.save_relation(bot_id, a_uid, b_uid, "朋友", "大学同学")
 await plugin.mem.delete_relation(bot_id, a_uid, b_uid)
 
+await plugin.mem.person_context(bot_id, "lark", "ou_abc", 8)   # 这个人在别的平台说过什么
+await plugin.mem.save_profile(bot_id, uid, name="阿墨", platform="aiocqhttp")
+
 await plugin.mem.cache_get(bot_id, "schedule:2026-11-09")
 await plugin.mem.cache_set(bot_id, "schedule:2026-11-09", data, ttl=86400)
 ```
@@ -58,6 +62,8 @@ await plugin.mem.cache_set(bot_id, "schedule:2026-11-09", data, ttl=86400)
 插件详情 → 查看页面：
 
 - **画像**：搜索、编辑名字/别名/关系/备注、删除（连带记忆和关系边）、查看和新增/删除记忆；
+- **人物**：同一个人在不同平台（QQ / 飞书 / Telegram…）会并到一条下面，能看到他在这边说、在那边说了什么；
+  名字一样会自动并，并错了点进去「解绑」，也能手动把两条并成一条；
 - **关系网**：查看、添加、删除两个人之间的关系。
 
 ## 配置
@@ -70,6 +76,8 @@ await plugin.mem.cache_set(bot_id, "schedule:2026-11-09", data, ttl=86400)
 
 ## 版本
 
+- 2.0.4：跨平台人物合并（QQ / 飞书同一个人的聊天记录、画像能并到一起）。
+- 2.0.2：面板聚合所有 bot，修「没有任何数据」。
 - 1.0.0：首版。画像可编辑、记忆读写、FTS5 检索、关系网、缓存。
 
 ## 反馈与维护
