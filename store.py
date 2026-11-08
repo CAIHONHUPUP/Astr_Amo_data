@@ -116,6 +116,29 @@ class DataStore:
                     UPDATE memories_fts SET content = new.content WHERE rowid = old.id;
                 END;
 
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bot_id TEXT NOT NULL,
+                    umo TEXT NOT NULL,
+                    uid TEXT DEFAULT '',
+                    name TEXT DEFAULT '',
+                    role TEXT DEFAULT 'user',
+                    content TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    compressed INTEGER DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_msg_scan ON messages(bot_id, umo, created_at);
+
+                CREATE TABLE IF NOT EXISTS logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bot_id TEXT NOT NULL,
+                    level TEXT DEFAULT 'info',
+                    tag TEXT DEFAULT '',
+                    content TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_log_scan ON logs(bot_id, created_at);
+
                 CREATE TABLE IF NOT EXISTS relations (
                     bot_id TEXT NOT NULL,
                     a_uid TEXT NOT NULL,
@@ -351,7 +374,166 @@ class DataStore:
             self.conn.commit()
             return bool(cur.rowcount)
 
+    # ---------- 聊天记录 ----------
+    def add_message(self, bot_id: str, umo: str, uid: str = "", name: str = "",
+                    role: str = "user", content: str = "") -> int:
+        text = _clean(content, 4000)
+        if not text:
+            return 0
+        with self.lock:
+            cur = self.conn.execute(
+                "INSERT INTO messages(bot_id, umo, uid, name, role, content, created_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (str(bot_id), str(umo), str(uid), _clean(name, 64),
+                 "bot" if str(role) == "bot" else "user", text, _now()),
+            )
+            self.conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def list_messages(self, bot_id: str, umo: str = "", limit: int = 200) -> List[Dict[str, Any]]:
+        sql = ("SELECT id, umo, uid, name, role, content, created_at, compressed "
+               "FROM messages WHERE bot_id=?")
+        params: List[Any] = [str(bot_id)]
+        if umo:
+            sql += " AND umo=?"
+            params.append(str(umo))
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 1000)))
+        with self.lock:
+            rows = self.conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_message(self, bot_id: str, message_id: int) -> bool:
+        with self.lock:
+            cur = self.conn.execute(
+                "DELETE FROM messages WHERE bot_id=? AND id=?",
+                (str(bot_id), int(message_id)),
+            )
+            self.conn.commit()
+            return bool(cur.rowcount)
+
+    def clear_messages(self, bot_id: str, umo: str = "") -> int:
+        sql = "DELETE FROM messages WHERE bot_id=?"
+        params: List[Any] = [str(bot_id)]
+        if umo:
+            sql += " AND umo=?"
+            params.append(str(umo))
+        with self.lock:
+            cur = self.conn.execute(sql, params)
+            self.conn.commit()
+            return max(0, cur.rowcount or 0)
+
+    def purge_messages(self, bot_id: str, days: int = 14) -> int:
+        """超过保留期的原始聊天记录直接删掉。"""
+        cutoff = _now() - max(1, int(days)) * 86400
+        with self.lock:
+            cur = self.conn.execute(
+                "DELETE FROM messages WHERE bot_id=? AND created_at<? AND compressed=0",
+                (str(bot_id), cutoff),
+            )
+            self.conn.commit()
+            return max(0, cur.rowcount or 0)
+
+    def compress_messages(self, bot_id: str, after_days: int = 3, keep_days: int = 14) -> Dict[str, int]:
+        """把 N 天前的原始聊天按「会话 + 天」压成一条摘要，超过保留期连摘要一起删。"""
+        now = _now()
+        cut = now - max(1, int(after_days)) * 86400
+        expire = now - max(1, int(keep_days)) * 86400
+        counts = {"compressed": 0, "purged": 0}
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT id, umo, uid, name, role, content, created_at FROM messages "
+                "WHERE bot_id=? AND created_at<? AND compressed=0 ORDER BY created_at",
+                (str(bot_id), cut),
+            ).fetchall()
+            buckets: Dict[Any, List[sqlite3.Row]] = {}
+            for row in rows:
+                day = time.strftime("%Y-%m-%d", time.localtime(int(row["created_at"])))
+                buckets.setdefault((str(row["umo"]), day), []).append(row)
+            for (umo, day), items in buckets.items():
+                speakers = []
+                for item in items:
+                    label = "她" if str(item["role"]) == "bot" else str(item["name"] or item["uid"] or "对方")
+                    if label not in speakers:
+                        speakers.append(label)
+                body = " / ".join(
+                    ("她：" if str(item["role"]) == "bot" else str(item["name"] or "对方") + "：")
+                    + _clean(item["content"], 120)
+                    for item in items[:40]
+                )
+                summary = _clean(
+                    "[%s 共 %d 条 · %s] %s" % (day, len(items), "、".join(speakers), body), 2000
+                )
+                stamp = int(items[0]["created_at"])
+                self.conn.execute(
+                    "INSERT INTO messages(bot_id, umo, uid, name, role, content, created_at, compressed) "
+                    "VALUES(?,?,?,?,?,?,?,1)",
+                    (str(bot_id), umo, "", "摘要", "bot", summary, stamp),
+                )
+                ids = [int(item["id"]) for item in items]
+                self.conn.executemany(
+                    "DELETE FROM messages WHERE bot_id=? AND id=?",
+                    [(str(bot_id), item_id) for item_id in ids],
+                )
+                counts["compressed"] += 1
+            cur = self.conn.execute(
+                "DELETE FROM messages WHERE bot_id=? AND created_at<?",
+                (str(bot_id), expire),
+            )
+            counts["purged"] = max(0, cur.rowcount or 0)
+            self.conn.commit()
+        return counts
+
+    # ---------- 运行日志 ----------
+    def add_log(self, bot_id: str, level: str, tag: str, content: str) -> int:
+        text = _clean(content, 2000)
+        if not text:
+            return 0
+        with self.lock:
+            cur = self.conn.execute(
+                "INSERT INTO logs(bot_id, level, tag, content, created_at) VALUES(?,?,?,?,?)",
+                (str(bot_id), _clean(level, 16) or "info", _clean(tag, 32), text, _now()),
+            )
+            self.conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def list_logs(self, bot_id: str, level: str = "", limit: int = 200) -> List[Dict[str, Any]]:
+        sql = "SELECT id, level, tag, content, created_at FROM logs WHERE bot_id=?"
+        params: List[Any] = [str(bot_id)]
+        if level:
+            sql += " AND level=?"
+            params.append(str(level))
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 1000)))
+        with self.lock:
+            rows = self.conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_log(self, bot_id: str, log_id: int) -> bool:
+        with self.lock:
+            cur = self.conn.execute(
+                "DELETE FROM logs WHERE bot_id=? AND id=?", (str(bot_id), int(log_id))
+            )
+            self.conn.commit()
+            return bool(cur.rowcount)
+
+    def clear_logs(self, bot_id: str) -> int:
+        with self.lock:
+            cur = self.conn.execute("DELETE FROM logs WHERE bot_id=?", (str(bot_id),))
+            self.conn.commit()
+            return max(0, cur.rowcount or 0)
+
+    def purge_logs(self, bot_id: str, days: int = 7) -> int:
+        cutoff = _now() - max(1, int(days)) * 86400
+        with self.lock:
+            cur = self.conn.execute(
+                "DELETE FROM logs WHERE bot_id=? AND created_at<?", (str(bot_id), cutoff)
+            )
+            self.conn.commit()
+            return max(0, cur.rowcount or 0)
+
     # ---------- 关系网 ----------
+
     def list_relations(self, bot_id: str, uid: str = "") -> List[Dict[str, Any]]:
         sql = "SELECT a_uid, b_uid, relation, note, updated_at FROM relations WHERE bot_id=?"
         params: List[Any] = [str(bot_id)]
@@ -444,6 +626,8 @@ class DataStore:
                 ("memories", "SELECT COUNT(*) AS c FROM memories WHERE bot_id=?"),
                 ("relations", "SELECT COUNT(*) AS c FROM relations WHERE bot_id=?"),
                 ("cache", "SELECT COUNT(*) AS c FROM cache WHERE bot_id=?"),
+                ("messages", "SELECT COUNT(*) AS c FROM messages WHERE bot_id=?"),
+                ("logs", "SELECT COUNT(*) AS c FROM logs WHERE bot_id=?"),
             ):
                 row = self.conn.execute(sql, (str(bot_id),)).fetchone()
                 out[name] = int(row["c"] or 0) if row else 0
