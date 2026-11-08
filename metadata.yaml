@@ -8,6 +8,7 @@ astrbot_version: ">=4.5.7"
 repo: https://github.com/GM888888456/Astr_Amo_data
 support_platforms:
   - aiocqhttp
+  - lark
 tags:
   - 记忆
   - 画像
