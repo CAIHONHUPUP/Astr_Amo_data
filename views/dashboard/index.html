@@ -195,23 +195,149 @@ function objectFrom(res) {
   return res && typeof res === "object" ? res : {};
 }
 
-async function call(path, payload) {
+function officialBridge() {
+  if (!window.parent || window.parent === window) return null;
+  const candidates = [];
+  try { candidates.push(window.AstrBotPluginView, window.AstrBotPluginPage); } catch (error) {}
+  try { candidates.push(window.parent.AstrBotPluginView, window.parent.AstrBotPluginPage); } catch (error) {}
+  try { candidates.push(window.top.AstrBotPluginView, window.top.AstrBotPluginPage); } catch (error) {}
+  return candidates.find((item) => item && typeof item.apiGet === "function") || null;
+}
+
+function createInlineBridge() {
+  if (!window.parent || window.parent === window) return null;
+  const pending = new Map();
+  let counter = 0;
+  let readyResolver = null;
+  const readyPromise = new Promise((resolve) => { readyResolver = resolve; });
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (!message || message.channel !== "astrbot-plugin-page") return;
+    if (message.kind === "context") {
+      if (readyResolver) { readyResolver(message.context || {}); readyResolver = null; }
+      return;
+    }
+    if (message.kind !== "response") return;
+    const item = pending.get(message.requestId);
+    if (!item) return;
+    pending.delete(message.requestId);
+    if (message.ok) item.resolve(message.data);
+    else item.reject(new Error(message.error || "插件桥接请求失败"));
+  });
+  function request(action, payload) {
+    return new Promise((resolve, reject) => {
+      const requestId = "amo_data_req_" + (++counter);
+      const timer = setTimeout(() => {
+        if (pending.delete(requestId)) reject(new Error("插件桥接超时"));
+      }, 30000);
+      pending.set(requestId, {
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      });
+      try {
+        window.parent.postMessage({
+          channel: "astrbot-plugin-page",
+          kind: "request",
+          requestId,
+          action,
+          ...(payload || {}),
+        }, "*");
+      } catch (error) {
+        clearTimeout(timer);
+        pending.delete(requestId);
+        reject(error);
+      }
+    });
+  }
+  try { window.parent.postMessage({ channel: "astrbot-plugin-page", kind: "ready" }, "*"); } catch (error) {}
+  return {
+    apiGet: (endpoint, params) => request("api:get", { endpoint, params }),
+    apiPost: (endpoint, body) => request("api:post", { endpoint, body }),
+    ready: () => readyPromise,
+  };
+}
+
+const inlineBridge = createInlineBridge();
+
+function bridge() {
+  return officialBridge() || inlineBridge;
+}
+
+const WRITE_ACTIONS = new Set([
+  "profile/save", "profile/delete", "memory/save", "memory/delete",
+  "relation/save", "relation/delete", "message/delete", "message/clear",
+  "log/delete", "log/clear", "schedule/delete", "maintenance",
+]);
+
+async function bridgeCall(action, payload) {
+  const b = bridge();
+  if (!b) return { __error: "没有页面桥接" };
+  try {
+    const attempt = payload && typeof b.apiPost === "function"
+      ? b.apiPost(action, payload)
+      : b.apiGet(action, payload || {});
+    let result = await attempt;
+    if (result && typeof result.json === "function") result = await result.json();
+    if (typeof result === "string") {
+      try { result = JSON.parse(result); } catch (error) {}
+    }
+    if (result && typeof result === "object") {
+      if (typeof result.code === "number" && result.code >= 400) {
+        return { __error: result.msg || ("HTTP " + result.code) };
+      }
+      return result;
+    }
+    return { __error: "接口返回格式异常" };
+  } catch (error) {
+    return { __error: error.message || String(error) };
+  }
+}
+
+async function httpCall(action, payload) {
   const errors = [];
+  const headers = {};
+  if (payload) headers["Content-Type"] = "application/json";
+  try {
+    for (const key of ["token", "astrbot_token", "access_token", "dashboard_token"]) {
+      const value = window.localStorage.getItem(key);
+      if (value) { headers["Authorization"] = "Bearer " + value; break; }
+    }
+  } catch (error) {}
   for (const base of bases) {
+    const url = base + "/" + action.replace(/^\/+/, "");
     try {
-      const res = await fetch(base + path, {
+      const response = await fetch(url, {
         method: payload ? "POST" : "GET",
         credentials: "include",
-        headers: payload ? { "Content-Type": "application/json" } : {},
+        cache: "no-store",
+        headers,
         body: payload ? JSON.stringify(payload) : undefined,
       });
-      if (res.status === 404) { errors.push("404"); continue; }
-      const data = await res.json();
-      if (data && data.code === 1) throw new Error(data.msg || "接口返回错误");
-      return data;
-    } catch (error) { errors.push(error.message); }
+      const text = await response.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch (error) { data = null; }
+      if (data && (data.code === 0 || data.data !== undefined || data.status === "ok")) return data;
+      if (data && (data.message || data.msg)) errors.push(data.message || data.msg);
+      else errors.push("HTTP " + response.status);
+    } catch (error) {
+      errors.push(error.message || String(error));
+    }
   }
-  throw new Error(errors[0] || "接口未就绪");
+  throw new Error(errors[0] || "无法连接插件接口");
+}
+
+async function call(action, payload) {
+  const body = (payload === undefined || payload === null)
+    ? (WRITE_ACTIONS.has(action) ? {} : payload)
+    : payload;
+  const bridged = await bridgeCall(action, body);
+  if (bridged && !bridged.__error) return bridged;
+  try {
+    return await httpCall(action, body);
+  } catch (error) {
+    throw new Error((bridged && bridged.__error) || error.message || "接口未就绪");
+  }
 }
 
 function fmtTime(ts) {
@@ -236,7 +362,7 @@ document.querySelectorAll("nav button").forEach((btn) => {
 
 async function loadStatus() {
   try {
-    const data = objectFrom(await call("/status")) || {};
+    const data = objectFrom(await call("status")) || {};
     const counts = data.counts || {};
     document.getElementById("stat").textContent =
       "画像 " + (counts.profiles || 0) + " · 记忆 " + (counts.memories || 0) +
@@ -253,7 +379,7 @@ async function loadProfiles() {
   box.textContent = "读取中…";
   try {
     const keyword = (document.getElementById("search").value || "").trim();
-    const data = objectFrom(await call("/profiles" + (keyword ? "?keyword=" + encodeURIComponent(keyword) : ""))) || {};
+    const data = objectFrom(await call("profiles", keyword ? { keyword } : undefined)) || {};
     const items = Array.isArray(data.items) ? data.items : [];
     box.textContent = "";
     if (!items.length) { box.innerHTML = '<div class="empty">还没有画像。</div>'; return; }
@@ -281,7 +407,7 @@ async function loadProfiles() {
 async function openProfile(uid) {
   currentUid = uid;
   try {
-    const data = objectFrom(await call("/profile?uid=" + encodeURIComponent(uid))) || {};
+    const data = objectFrom(await call("profile", { uid })) || {};
     const p = data.profile || {};
     document.getElementById("editor").hidden = false;
     document.getElementById("editorTitle").textContent = "编辑画像 · " + (p.name || uid);
@@ -316,7 +442,7 @@ function renderMemories(items) {
     del.textContent = "删";
     del.addEventListener("click", async () => {
       try {
-        await call("/memory/delete", { id: item.id });
+        await call("memory/delete", { id: item.id });
         toast("已删除");
         openProfile(currentUid);
         loadStatus();
@@ -329,7 +455,7 @@ function renderMemories(items) {
 
 document.getElementById("btnSaveProfile").addEventListener("click", async () => {
   try {
-    await call("/profile/save", {
+    await call("profile/save", {
       uid: currentUid,
       name: document.getElementById("fName").value,
       alias: document.getElementById("fAlias").value,
@@ -346,7 +472,7 @@ document.getElementById("btnDeleteProfile").addEventListener("click", async () =
   if (!currentUid) return;
   if (!window.confirm("删除 " + currentUid + " 的画像、记忆、关系边？不可恢复。")) return;
   try {
-    await call("/profile/delete?uid=" + encodeURIComponent(currentUid) + "&confirm=1");
+    await call("profile/delete", { uid: currentUid, confirm: 1 });
     toast("已删除");
     document.getElementById("editor").hidden = true;
     document.getElementById("memories").hidden = true;
@@ -365,7 +491,7 @@ document.getElementById("btnAddMem").addEventListener("click", async () => {
   const content = (document.getElementById("newMem").value || "").trim();
   if (!content || !currentUid) { toast("先选个人再写内容", true); return; }
   try {
-    await call("/memory/save", { uid: currentUid, content, kind: "manual", importance: 0.6 });
+    await call("memory/save", { uid: currentUid, content, kind: "manual", importance: 0.6 });
     document.getElementById("newMem").value = "";
     toast("已记住");
     openProfile(currentUid);
@@ -385,7 +511,7 @@ async function loadRelations() {
   const box = document.getElementById("relList");
   box.textContent = "读取中…";
   try {
-    const data = objectFrom(await call("/relations")) || {};
+    const data = objectFrom(await call("relations")) || {};
     const items = Array.isArray(data.items) ? data.items : [];
     box.textContent = "";
     if (!items.length) { box.innerHTML = '<div class="empty">还没有关系边。</div>'; return; }
@@ -407,7 +533,7 @@ async function loadRelations() {
       del.textContent = "删";
       del.addEventListener("click", async () => {
         try {
-          await call("/relation/delete?a_uid=" + encodeURIComponent(edge.a_uid) + "&b_uid=" + encodeURIComponent(edge.b_uid));
+          await call("relation/delete", { a_uid: edge.a_uid, b_uid: edge.b_uid });
           loadRelations();
           loadStatus();
         } catch (error) { toast("删除失败：" + error.message, true); }
@@ -425,7 +551,7 @@ document.getElementById("btnAddRel").addEventListener("click", async () => {
   const b = (document.getElementById("relB").value || "").trim();
   if (!a || !b || a === b) { toast("需要两个不同的 uid", true); return; }
   try {
-    await call("/relation/save", {
+    await call("relation/save", {
       a_uid: a, b_uid: b,
       relation: document.getElementById("relType").value,
       note: document.getElementById("relNote").value,
@@ -445,7 +571,7 @@ async function loadChat() {
   box.textContent = "读取中…";
   try {
     const umo = (document.getElementById("chatUmo").value || "").trim();
-    const data = objectFrom(await call("/messages" + (umo ? "?umo=" + encodeURIComponent(umo) : ""))) || {};
+    const data = objectFrom(await call("messages", umo ? { umo } : undefined)) || {};
     const items = Array.isArray(data.items) ? data.items : [];
     box.textContent = "";
     if (!items.length) { box.innerHTML = '<div class="empty">还没有聊天记录。</div>'; return; }
@@ -466,7 +592,7 @@ async function loadChat() {
       del.textContent = "删";
       del.addEventListener("click", async () => {
         try {
-          await call("/message/delete", { id: item.id });
+          await call("message/delete", { id: item.id });
           loadChat();
           loadStatus();
         } catch (error) { toast("删除失败：" + error.message, true); }
@@ -484,7 +610,7 @@ document.getElementById("btnChatClear").addEventListener("click", async () => {
   const umo = (document.getElementById("chatUmo").value || "").trim();
   if (!window.confirm("清空" + (umo ? "这个会话" : "全部") + "聊天记录？不可恢复。")) return;
   try {
-    await call("/message/clear", { umo, confirm: 1 });
+    await call("message/clear", { umo, confirm: 1 });
     toast("已清空");
     loadChat();
     loadStatus();
@@ -496,7 +622,7 @@ async function loadSchedule() {
   const box = document.getElementById("schedList");
   box.textContent = "读取中…";
   try {
-    const data = objectFrom(await call("/schedule")) || {};
+    const data = objectFrom(await call("schedule")) || {};
     const items = Array.isArray(data.items) ? data.items : [];
     box.textContent = "";
     if (!items.length) { box.innerHTML = '<div class="empty">还没有日程缓存。</div>'; return; }
@@ -521,7 +647,7 @@ async function loadSchedule() {
         e.stopPropagation();
         if (!window.confirm("删除缓存 " + item.key + "？")) return;
         try {
-          await call("/schedule/delete", { key: item.key });
+          await call("schedule/delete", { key: item.key });
           toast("已删除");
           loadSchedule();
         } catch (error) { toast("删除失败：" + error.message, true); }
@@ -536,7 +662,7 @@ async function loadSchedule() {
 
 async function viewSchedule(key) {
   try {
-    const data = objectFrom(await call("/schedule?key=" + encodeURIComponent(key))) || {};
+    const data = objectFrom(await call("schedule", { key })) || {};
     document.getElementById("schedView").hidden = false;
     document.getElementById("schedTitle").textContent = key;
     document.getElementById("schedBody").value = JSON.stringify(data.value, null, 2);
@@ -554,7 +680,7 @@ async function loadLogs() {
   box.textContent = "读取中…";
   try {
     const level = (document.getElementById("logLevel").value || "").trim();
-    const data = objectFrom(await call("/logs" + (level ? "?level=" + encodeURIComponent(level) : ""))) || {};
+    const data = objectFrom(await call("logs", level ? { level } : undefined)) || {};
     const items = Array.isArray(data.items) ? data.items : [];
     box.textContent = "";
     if (!items.length) { box.innerHTML = '<div class="empty">还没有日志。</div>'; return; }
@@ -575,7 +701,7 @@ async function loadLogs() {
       del.textContent = "删";
       del.addEventListener("click", async () => {
         try {
-          await call("/log/delete", { id: item.id });
+          await call("log/delete", { id: item.id });
           loadLogs();
         } catch (error) { toast("删除失败：" + error.message, true); }
       });
@@ -592,7 +718,7 @@ document.getElementById("logLevel").addEventListener("change", loadLogs);
 document.getElementById("btnLogClear").addEventListener("click", async () => {
   if (!window.confirm("清空全部日志？不可恢复。")) return;
   try {
-    await call("/log/clear", { confirm: 1 });
+    await call("log/clear", { confirm: 1 });
     toast("已清空");
     loadLogs();
   } catch (error) { toast("清空失败：" + error.message, true); }
