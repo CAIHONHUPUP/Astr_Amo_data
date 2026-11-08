@@ -11,8 +11,8 @@
   header { padding:14px 16px; background:var(--card); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; position:sticky; top:0; z-index:5; }
   header h1 { font-size:15px; margin:0; font-weight:600; }
   .badge { font-size:11px; color:var(--muted); }
-  nav { display:flex; gap:6px; padding:10px 16px 0; }
-  nav button { border:1px solid var(--line); background:var(--card); color:var(--text); padding:6px 12px; border-radius:8px; font-size:13px; cursor:pointer; }
+  nav { display:flex; gap:6px; padding:10px 16px 0; overflow-x:auto; }
+  nav button { border:1px solid var(--line); background:var(--card); color:var(--text); padding:6px 12px; border-radius:8px; font-size:13px; cursor:pointer; white-space:nowrap; }
   nav button.active { border-color:var(--pink); color:var(--pink); }
   main { padding:12px 16px 40px; }
   .panel { display:none; }
@@ -30,11 +30,12 @@
   .item { border:1px solid var(--line); border-radius:10px; padding:9px 10px; display:flex; gap:10px; align-items:center; cursor:pointer; background:#fff; }
   .item:hover { border-color:#e0d3e6; }
   .item .name { font-weight:600; font-size:13px; }
-  .item .sub { font-size:11px; color:var(--muted); margin-top:2px; }
-  .mem { display:flex; gap:8px; align-items:flex-start; padding:7px 0; border-bottom:1px dashed var(--line); }
-  .mem:last-child { border-bottom:none; }
-  .mem .txt { flex:1; font-size:13px; word-break:break-word; }
-  .mem .meta { font-size:11px; color:var(--muted); white-space:nowrap; }
+  .item .sub { font-size:11px; color:var(--muted); margin-top:2px; word-break:break-all; }
+  .msg { padding:7px 0; border-bottom:1px dashed var(--line); display:flex; gap:8px; align-items:flex-start; }
+  .msg:last-child { border-bottom:none; }
+  .msg .who { font-size:11px; color:var(--muted); white-space:nowrap; min-width:64px; }
+  .msg .txt { flex:1; font-size:13px; word-break:break-word; }
+  .msg .time { font-size:11px; color:var(--muted); white-space:nowrap; }
   .empty { color:var(--muted); font-size:12px; padding:10px 0; }
   .toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%); background:rgba(44,36,48,.92); color:#fff; padding:8px 14px; border-radius:8px; font-size:12px; opacity:0; transition:.2s; pointer-events:none; }
   .toast.show { opacity:1; }
@@ -50,6 +51,9 @@
 <nav>
   <button class="active" data-tab="profiles">画像</button>
   <button data-tab="relations">关系网</button>
+  <button data-tab="chat">聊天</button>
+  <button data-tab="schedule">日程</button>
+  <button data-tab="logs">日志</button>
 </nav>
 
 <main>
@@ -115,7 +119,58 @@
     </div>
     <div class="list" id="relList"></div>
   </section>
+
+  <section class="panel" id="panel-chat">
+    <div class="card">
+      <div class="row">
+        <input class="grow" id="chatUmo" placeholder="按会话筛选（可留空）">
+        <button class="ghost" id="btnChatReload">刷新</button>
+        <button class="ghost danger" id="btnChatClear">清空</button>
+      </div>
+      <div class="hint">原始记录保留 14 天；3 天前的会按天压成一条摘要（标「摘要」），到期后彻底删除。</div>
+    </div>
+    <div class="card"><div id="chatList" class="list"></div></div>
+  </section>
+
+  <section class="panel" id="panel-schedule">
+    <div class="card">
+      <div class="row">
+        <strong class="grow">日程 / 世界观缓存</strong>
+        <button class="ghost" id="btnSchedReload">刷新</button>
+      </div>
+      <div class="hint">跟随陪伴插件的日程保留策略；这里只看和删，不重建。</div>
+    </div>
+    <div class="list" id="schedList"></div>
+    <div class="card" id="schedView" hidden>
+      <div class="row">
+        <strong class="grow" id="schedTitle">内容</strong>
+        <button class="ghost" id="btnSchedClose">关闭</button>
+      </div>
+      <textarea id="schedBody" rows="14" readonly></textarea>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-logs">
+    <div class="card">
+      <div class="row">
+        <select id="logLevel" class="grow">
+          <option value="">全部级别</option>
+          <option value="info">info</option>
+          <option value="warning">warning</option>
+          <option value="error">error</option>
+        </select>
+        <button class="ghost" id="btnLogReload">刷新</button>
+        <button class="ghost danger" id="btnLogClear">清空</button>
+      </div>
+      <div class="hint">默认保留 7 天，到期自动删除。</div>
+    </div>
+    <div class="card"><div id="logList" class="list"></div></div>
+  </section>
 </main>
+
+<footer style="padding:0 16px 28px;text-align:center;font-size:11px;color:var(--muted)">
+  数据来自 Astr_Amo_data · 反馈 / 建议：<a href="https://qm.qq.com/q/1055679275" target="_blank" rel="noreferrer" style="color:var(--pink);text-decoration:none">点击加入 QQ 群 1055679275</a>
+</footer>
 
 <div class="toast" id="toast"></div>
 
@@ -124,7 +179,6 @@ const PLUGIN = "Astr_Amo_data";
 const bases = [
   "/api/v1/plugins/extensions/" + PLUGIN,
   "/api/plug/" + PLUGIN,
-  "/api/v1/plugins/extensions/" + window.location.pathname.split("/").filter(Boolean).slice(-1)[0],
 ];
 let currentUid = "";
 
@@ -160,11 +214,23 @@ async function call(path, payload) {
   throw new Error(errors[0] || "接口未就绪");
 }
 
+function fmtTime(ts) {
+  if (!ts) return "";
+  const d = new Date(Number(ts) * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate())
+    + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+}
+
 document.querySelectorAll("nav button").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b === btn));
     document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + btn.dataset.tab));
-    if (btn.dataset.tab === "relations") loadRelations();
+    const tab = btn.dataset.tab;
+    if (tab === "relations") loadRelations();
+    if (tab === "chat") loadChat();
+    if (tab === "schedule") loadSchedule();
+    if (tab === "logs") loadLogs();
   });
 });
 
@@ -174,12 +240,14 @@ async function loadStatus() {
     const counts = data.counts || {};
     document.getElementById("stat").textContent =
       "画像 " + (counts.profiles || 0) + " · 记忆 " + (counts.memories || 0) +
-      " · 关系 " + (counts.relations || 0) + " · v" + (data.version || "");
+      " · 关系 " + (counts.relations || 0) + " · 聊天 " + (counts.messages || 0) +
+      " · v" + (data.version || "");
   } catch (error) {
     document.getElementById("stat").textContent = "后端未就绪";
   }
 }
 
+/* ---------- 画像 ---------- */
 async function loadProfiles() {
   const box = document.getElementById("profileList");
   box.textContent = "读取中…";
@@ -188,7 +256,7 @@ async function loadProfiles() {
     const data = objectFrom(await call("/profiles" + (keyword ? "?keyword=" + encodeURIComponent(keyword) : ""))) || {};
     const items = Array.isArray(data.items) ? data.items : [];
     box.textContent = "";
-    if (!items.length) { box.innerHTML = '<div class="empty">还没有画像。有人在群里说话就会自动建。</div>'; return; }
+    if (!items.length) { box.innerHTML = '<div class="empty">还没有画像。</div>'; return; }
     items.forEach((item) => {
       const row = document.createElement("div");
       row.className = "item";
@@ -236,11 +304,12 @@ function renderMemories(items) {
   items.forEach((item) => {
     const row = document.createElement("div");
     row.className = "mem";
+    row.style.cssText = "display:flex;gap:8px;align-items:flex-start;padding:7px 0;border-bottom:1px dashed var(--line)";
     const txt = document.createElement("div");
-    txt.className = "txt";
+    txt.style.flex = "1";
     txt.textContent = item.content;
     const meta = document.createElement("div");
-    meta.className = "meta";
+    meta.className = "sub";
     meta.textContent = (item.kind || "fact") + " · " + Number(item.importance || 0).toFixed(2);
     const del = document.createElement("button");
     del.className = "ghost";
@@ -311,6 +380,7 @@ document.getElementById("search").addEventListener("input", () => {
   window._st = setTimeout(loadProfiles, 250);
 });
 
+/* ---------- 关系网 ---------- */
 async function loadRelations() {
   const box = document.getElementById("relList");
   box.textContent = "读取中…";
@@ -367,6 +437,165 @@ document.getElementById("btnAddRel").addEventListener("click", async () => {
     loadRelations();
     loadStatus();
   } catch (error) { toast("添加失败：" + error.message, true); }
+});
+
+/* ---------- 聊天 ---------- */
+async function loadChat() {
+  const box = document.getElementById("chatList");
+  box.textContent = "读取中…";
+  try {
+    const umo = (document.getElementById("chatUmo").value || "").trim();
+    const data = objectFrom(await call("/messages" + (umo ? "?umo=" + encodeURIComponent(umo) : ""))) || {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    box.textContent = "";
+    if (!items.length) { box.innerHTML = '<div class="empty">还没有聊天记录。</div>'; return; }
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "msg";
+      const who = document.createElement("div");
+      who.className = "who";
+      who.textContent = item.role === "bot" ? "她" : (item.name || item.uid || "对方");
+      const txt = document.createElement("div");
+      txt.className = "txt";
+      txt.textContent = item.content;
+      const time = document.createElement("div");
+      time.className = "time";
+      time.textContent = fmtTime(item.created_at);
+      const del = document.createElement("button");
+      del.className = "ghost";
+      del.textContent = "删";
+      del.addEventListener("click", async () => {
+        try {
+          await call("/message/delete", { id: item.id });
+          loadChat();
+          loadStatus();
+        } catch (error) { toast("删除失败：" + error.message, true); }
+      });
+      row.appendChild(who); row.appendChild(txt); row.appendChild(time); row.appendChild(del);
+      box.appendChild(row);
+    });
+  } catch (error) {
+    box.textContent = "读取失败：" + error.message;
+  }
+}
+
+document.getElementById("btnChatReload").addEventListener("click", loadChat);
+document.getElementById("btnChatClear").addEventListener("click", async () => {
+  const umo = (document.getElementById("chatUmo").value || "").trim();
+  if (!window.confirm("清空" + (umo ? "这个会话" : "全部") + "聊天记录？不可恢复。")) return;
+  try {
+    await call("/message/clear", { umo, confirm: 1 });
+    toast("已清空");
+    loadChat();
+    loadStatus();
+  } catch (error) { toast("清空失败：" + error.message, true); }
+});
+
+/* ---------- 日程 ---------- */
+async function loadSchedule() {
+  const box = document.getElementById("schedList");
+  box.textContent = "读取中…";
+  try {
+    const data = objectFrom(await call("/schedule")) || {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    box.textContent = "";
+    if (!items.length) { box.innerHTML = '<div class="empty">还没有日程缓存。</div>'; return; }
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "item";
+      const left = document.createElement("div");
+      left.className = "grow";
+      const name = document.createElement("div");
+      name.className = "name";
+      name.textContent = item.key;
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = (item.size / 1024).toFixed(1) + " KB";
+      left.appendChild(name); left.appendChild(sub);
+      row.appendChild(left);
+      row.addEventListener("click", () => viewSchedule(item.key));
+      const del = document.createElement("button");
+      del.className = "ghost danger";
+      del.textContent = "删";
+      del.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (!window.confirm("删除缓存 " + item.key + "？")) return;
+        try {
+          await call("/schedule/delete", { key: item.key });
+          toast("已删除");
+          loadSchedule();
+        } catch (error) { toast("删除失败：" + error.message, true); }
+      });
+      row.appendChild(del);
+      box.appendChild(row);
+    });
+  } catch (error) {
+    box.textContent = "读取失败：" + error.message;
+  }
+}
+
+async function viewSchedule(key) {
+  try {
+    const data = objectFrom(await call("/schedule?key=" + encodeURIComponent(key))) || {};
+    document.getElementById("schedView").hidden = false;
+    document.getElementById("schedTitle").textContent = key;
+    document.getElementById("schedBody").value = JSON.stringify(data.value, null, 2);
+  } catch (error) { toast("读取失败：" + error.message, true); }
+}
+
+document.getElementById("btnSchedReload").addEventListener("click", loadSchedule);
+document.getElementById("btnSchedClose").addEventListener("click", () => {
+  document.getElementById("schedView").hidden = true;
+});
+
+/* ---------- 日志 ---------- */
+async function loadLogs() {
+  const box = document.getElementById("logList");
+  box.textContent = "读取中…";
+  try {
+    const level = (document.getElementById("logLevel").value || "").trim();
+    const data = objectFrom(await call("/logs" + (level ? "?level=" + encodeURIComponent(level) : ""))) || {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    box.textContent = "";
+    if (!items.length) { box.innerHTML = '<div class="empty">还没有日志。</div>'; return; }
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "msg";
+      const who = document.createElement("div");
+      who.className = "who";
+      who.textContent = item.level + (item.tag ? " · " + item.tag : "");
+      const txt = document.createElement("div");
+      txt.className = "txt";
+      txt.textContent = item.content;
+      const time = document.createElement("div");
+      time.className = "time";
+      time.textContent = fmtTime(item.created_at);
+      const del = document.createElement("button");
+      del.className = "ghost";
+      del.textContent = "删";
+      del.addEventListener("click", async () => {
+        try {
+          await call("/log/delete", { id: item.id });
+          loadLogs();
+        } catch (error) { toast("删除失败：" + error.message, true); }
+      });
+      row.appendChild(who); row.appendChild(txt); row.appendChild(time); row.appendChild(del);
+      box.appendChild(row);
+    });
+  } catch (error) {
+    box.textContent = "读取失败：" + error.message;
+  }
+}
+
+document.getElementById("btnLogReload").addEventListener("click", loadLogs);
+document.getElementById("logLevel").addEventListener("change", loadLogs);
+document.getElementById("btnLogClear").addEventListener("click", async () => {
+  if (!window.confirm("清空全部日志？不可恢复。")) return;
+  try {
+    await call("/log/clear", { confirm: 1 });
+    toast("已清空");
+    loadLogs();
+  } catch (error) { toast("清空失败：" + error.message, true); }
 });
 
 loadStatus();
