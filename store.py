@@ -31,6 +31,14 @@ def _clean(text: Any, limit: int = 2000) -> str:
     return value[:limit]
 
 
+def _bot_filter(bot_id: str, column: str = "bot_id"):
+    """bot_id 为空表示不过滤（面板默认看全部 bot）。"""
+    value = str(bot_id or "").strip()
+    if not value:
+        return "", []
+    return " AND %s=?" % column, [value]
+
+
 class DataStore:
     """SQLite 存储。所有写操作走同一把 RLock，读操作也加锁，避免并发重开。"""
 
@@ -216,8 +224,8 @@ class DataStore:
         return self.get_profile(bot_id, uid)
 
     def list_profiles(self, bot_id: str, keyword: str = "", limit: int = 100) -> List[Dict[str, Any]]:
-        sql = "SELECT uid, name, alias, relation, remark, updated_at FROM profiles WHERE bot_id=?"
-        params: List[Any] = [str(bot_id)]
+        where, params = _bot_filter(bot_id)
+        sql = "SELECT uid, name, alias, relation, remark, updated_at FROM profiles WHERE 1=1" + where
         if keyword:
             sql += " AND (uid LIKE ? OR name LIKE ? OR alias LIKE ? OR remark LIKE ?)"
             like = "%" + str(keyword) + "%"
@@ -351,11 +359,11 @@ class DataStore:
         return items
 
     def list_memories(self, bot_id: str, uid: str = "", limit: int = 100) -> List[Dict[str, Any]]:
+        where, params = _bot_filter(bot_id)
         sql = (
             "SELECT id, uid, content, kind, importance, created_at, hit_count, scope, group_id "
-            "FROM memories WHERE bot_id=?"
+            "FROM memories WHERE 1=1" + where
         )
-        params: List[Any] = [str(bot_id)]
         if uid:
             sql += " AND uid=?"
             params.append(str(uid))
@@ -391,9 +399,9 @@ class DataStore:
             return int(cur.lastrowid or 0)
 
     def list_messages(self, bot_id: str, umo: str = "", limit: int = 200) -> List[Dict[str, Any]]:
+        where, params = _bot_filter(bot_id)
         sql = ("SELECT id, umo, uid, name, role, content, created_at, compressed "
-               "FROM messages WHERE bot_id=?")
-        params: List[Any] = [str(bot_id)]
+               "FROM messages WHERE 1=1" + where)
         if umo:
             sql += " AND umo=?"
             params.append(str(umo))
@@ -498,8 +506,8 @@ class DataStore:
             return int(cur.lastrowid or 0)
 
     def list_logs(self, bot_id: str, level: str = "", limit: int = 200) -> List[Dict[str, Any]]:
-        sql = "SELECT id, level, tag, content, created_at FROM logs WHERE bot_id=?"
-        params: List[Any] = [str(bot_id)]
+        where, params = _bot_filter(bot_id)
+        sql = "SELECT id, level, tag, content, created_at FROM logs WHERE 1=1" + where
         if level:
             sql += " AND level=?"
             params.append(str(level))
@@ -535,8 +543,8 @@ class DataStore:
     # ---------- 关系网 ----------
 
     def list_relations(self, bot_id: str, uid: str = "") -> List[Dict[str, Any]]:
-        sql = "SELECT a_uid, b_uid, relation, note, updated_at FROM relations WHERE bot_id=?"
-        params: List[Any] = [str(bot_id)]
+        where, params = _bot_filter(bot_id)
+        sql = "SELECT a_uid, b_uid, relation, note, updated_at FROM relations WHERE 1=1" + where
         if uid:
             sql += " AND (a_uid=? OR b_uid=?)"
             params.extend([str(uid), str(uid)])
@@ -611,24 +619,44 @@ class DataStore:
             self.conn.commit()
             return bool(cur.rowcount)
 
-    def cache_keys(self, bot_id: str) -> List[str]:
+    def cache_keys(self, bot_id: str = "") -> List[str]:
+        where, params = _bot_filter(bot_id)
         with self.lock:
             rows = self.conn.execute(
-                "SELECT key FROM cache WHERE bot_id=? ORDER BY updated_at DESC", (str(bot_id),)
+                "SELECT key FROM cache WHERE 1=1" + where + " ORDER BY updated_at DESC", params
             ).fetchall()
         return [str(row["key"]) for row in rows]
 
-    def stats(self, bot_id: str) -> Dict[str, int]:
+    def bot_ids(self) -> List[str]:
+        """面板用：列出库里出现过的所有 bot_id。"""
+        ids = set()
+        with self.lock:
+            for table in ("profiles", "memories", "messages", "logs", "relations", "cache"):
+                try:
+                    for row in self.conn.execute(
+                        "SELECT DISTINCT bot_id FROM %s WHERE bot_id != ''" % table
+                    ).fetchall():
+                        value = str(row["bot_id"] or "").strip()
+                        if value:
+                            ids.add(value)
+                except Exception:
+                    continue
+        return sorted(ids)
+
+    def stats(self, bot_id: str = "") -> Dict[str, int]:
+        where, params = _bot_filter(bot_id)
         with self.lock:
             out = {}
-            for name, sql in (
-                ("profiles", "SELECT COUNT(*) AS c FROM profiles WHERE bot_id=?"),
-                ("memories", "SELECT COUNT(*) AS c FROM memories WHERE bot_id=?"),
-                ("relations", "SELECT COUNT(*) AS c FROM relations WHERE bot_id=?"),
-                ("cache", "SELECT COUNT(*) AS c FROM cache WHERE bot_id=?"),
-                ("messages", "SELECT COUNT(*) AS c FROM messages WHERE bot_id=?"),
-                ("logs", "SELECT COUNT(*) AS c FROM logs WHERE bot_id=?"),
+            for name, table in (
+                ("profiles", "profiles"), ("memories", "memories"),
+                ("relations", "relations"), ("cache", "cache"),
+                ("messages", "messages"), ("logs", "logs"),
             ):
-                row = self.conn.execute(sql, (str(bot_id),)).fetchone()
+                if where:
+                    row = self.conn.execute(
+                        "SELECT COUNT(*) AS c FROM %s WHERE 1=1%s" % (table, where), params
+                    ).fetchone()
+                else:
+                    row = self.conn.execute("SELECT COUNT(*) AS c FROM %s" % table).fetchone()
                 out[name] = int(row["c"] or 0) if row else 0
         return out
