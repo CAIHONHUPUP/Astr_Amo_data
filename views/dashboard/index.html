@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>我想永远记住你</title>
+<style>
+  :root { --bg:#f7f5f8; --card:#fff; --text:#2c2430; --muted:#8a8090; --line:#ebe4ee; --pink:#d4578a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; font-size:14px; }
+  header { padding:14px 16px; background:var(--card); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; position:sticky; top:0; z-index:5; }
+  header h1 { font-size:15px; margin:0; font-weight:600; }
+  .badge { font-size:11px; color:var(--muted); }
+  nav { display:flex; gap:6px; padding:10px 16px 0; }
+  nav button { border:1px solid var(--line); background:var(--card); color:var(--text); padding:6px 12px; border-radius:8px; font-size:13px; cursor:pointer; }
+  nav button.active { border-color:var(--pink); color:var(--pink); }
+  main { padding:12px 16px 40px; }
+  .panel { display:none; }
+  .panel.active { display:block; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:10px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .grow { flex:1; min-width:120px; }
+  input, select, textarea { width:100%; border:1px solid var(--line); border-radius:8px; padding:7px 9px; font-size:13px; background:#fff; color:var(--text); font-family:inherit; }
+  textarea { min-height:60px; resize:vertical; }
+  label { display:block; font-size:12px; color:var(--muted); margin:6px 0 3px; }
+  button.primary { background:var(--pink); color:#fff; border:none; border-radius:8px; padding:7px 14px; font-size:13px; cursor:pointer; }
+  button.ghost { background:transparent; border:1px solid var(--line); border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer; color:var(--muted); }
+  button.danger { color:#c0392b; border-color:#f0d7d3; }
+  .list { display:flex; flex-direction:column; gap:6px; }
+  .item { border:1px solid var(--line); border-radius:10px; padding:9px 10px; display:flex; gap:10px; align-items:center; cursor:pointer; background:#fff; }
+  .item:hover { border-color:#e0d3e6; }
+  .item .name { font-weight:600; font-size:13px; }
+  .item .sub { font-size:11px; color:var(--muted); margin-top:2px; }
+  .mem { display:flex; gap:8px; align-items:flex-start; padding:7px 0; border-bottom:1px dashed var(--line); }
+  .mem:last-child { border-bottom:none; }
+  .mem .txt { flex:1; font-size:13px; word-break:break-word; }
+  .mem .meta { font-size:11px; color:var(--muted); white-space:nowrap; }
+  .empty { color:var(--muted); font-size:12px; padding:10px 0; }
+  .toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%); background:rgba(44,36,48,.92); color:#fff; padding:8px 14px; border-radius:8px; font-size:12px; opacity:0; transition:.2s; pointer-events:none; }
+  .toast.show { opacity:1; }
+  .hint { font-size:11px; color:var(--muted); margin-top:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>我想永远记住你</h1>
+  <span class="badge" id="stat">读取中…</span>
+</header>
+
+<nav>
+  <button class="active" data-tab="profiles">画像</button>
+  <button data-tab="relations">关系网</button>
+</nav>
+
+<main>
+  <section class="panel active" id="panel-profiles">
+    <div class="card">
+      <div class="row">
+        <input class="grow" id="search" placeholder="搜 uid / 称呼 / 备注">
+        <button class="ghost" id="btnReload">刷新</button>
+      </div>
+      <div class="hint">点一条进入编辑：改名字、称呼、关系，保存后立即写回库。</div>
+    </div>
+    <div class="list" id="profileList"></div>
+
+    <div class="card" id="editor" hidden>
+      <div class="row">
+        <strong class="grow" id="editorTitle">编辑画像</strong>
+        <button class="ghost" id="btnCloseEditor">关闭</button>
+      </div>
+      <label>UID</label>
+      <input id="fUid" readonly>
+      <label>名字</label>
+      <input id="fName" placeholder="她平时怎么叫他">
+      <label>别名（逗号分隔）</label>
+      <input id="fAlias" placeholder="老公,哥哥">
+      <label>关系</label>
+      <input id="fRelation" placeholder="相恋 / 熟识 / 普通 / 抵触 / 仇恨">
+      <label>备注</label>
+      <textarea id="fRemark" placeholder="特征、偏好、要注意的事"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="btnSaveProfile">保存</button>
+        <button class="ghost danger" id="btnDeleteProfile">删除这个人的全部数据</button>
+      </div>
+      <div class="hint">删除会连带清掉他的记忆、关系边和缓存，不可恢复。</div>
+    </div>
+
+    <div class="card" id="memories" hidden>
+      <div class="row">
+        <strong class="grow">记忆</strong>
+        <button class="ghost" id="btnRefreshMem">刷新</button>
+      </div>
+      <div id="memList"></div>
+      <label>新增一条记忆</label>
+      <div class="row">
+        <input class="grow" id="newMem" placeholder="例如：他养了一只叫团子的猫">
+        <button class="primary" id="btnAddMem">记住</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-relations">
+    <div class="card">
+      <div class="row">
+        <input class="grow" id="relA" placeholder="用户 A 的 uid">
+        <input class="grow" id="relB" placeholder="用户 B 的 uid">
+        <select id="relType">
+          <option>家人</option><option>恋人</option><option selected>朋友</option>
+          <option>同事</option><option>同学</option><option>熟人</option>
+          <option>陌生人</option><option>仇人</option>
+        </select>
+        <button class="primary" id="btnAddRel">添加</button>
+      </div>
+      <input id="relNote" placeholder="备注（可选）" style="margin-top:8px">
+    </div>
+    <div class="list" id="relList"></div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const PLUGIN = "Astr_Amo_data";
+const bases = [
+  "/api/v1/plugins/extensions/" + PLUGIN,
+  "/api/plug/" + PLUGIN,
+  "/api/v1/plugins/extensions/" + window.location.pathname.split("/").filter(Boolean).slice(-1)[0],
+];
+let currentUid = "";
+
+function toast(msg, bad) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = "toast show" + (bad ? " error" : "");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.className = "toast"; }, 2200);
+}
+
+function objectFrom(res) {
+  if (res && res.data && typeof res.data === "object" && !Array.isArray(res.data)) return res.data;
+  return res && typeof res === "object" ? res : {};
+}
+
+async function call(path, payload) {
+  const errors = [];
+  for (const base of bases) {
+    try {
+      const res = await fetch(base + path, {
+        method: payload ? "POST" : "GET",
+        credentials: "include",
+        headers: payload ? { "Content-Type": "application/json" } : {},
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
+      if (res.status === 404) { errors.push("404"); continue; }
+      const data = await res.json();
+      if (data && data.code === 1) throw new Error(data.msg || "接口返回错误");
+      return data;
+    } catch (error) { errors.push(error.message); }
+  }
+  throw new Error(errors[0] || "接口未就绪");
+}
+
+document.querySelectorAll("nav button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b === btn));
+    document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + btn.dataset.tab));
+    if (btn.dataset.tab === "relations") loadRelations();
+  });
+});
+
+async function loadStatus() {
+  try {
+    const data = objectFrom(await call("/status")) || {};
+    const counts = data.counts || {};
+    document.getElementById("stat").textContent =
+      "画像 " + (counts.profiles || 0) + " · 记忆 " + (counts.memories || 0) +
+      " · 关系 " + (counts.relations || 0) + " · v" + (data.version || "");
+  } catch (error) {
+    document.getElementById("stat").textContent = "后端未就绪";
+  }
+}
+
+async function loadProfiles() {
+  const box = document.getElementById("profileList");
+  box.textContent = "读取中…";
+  try {
+    const keyword = (document.getElementById("search").value || "").trim();
+    const data = objectFrom(await call("/profiles" + (keyword ? "?keyword=" + encodeURIComponent(keyword) : ""))) || {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    box.textContent = "";
+    if (!items.length) { box.innerHTML = '<div class="empty">还没有画像。有人在群里说话就会自动建。</div>'; return; }
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "item";
+      const left = document.createElement("div");
+      left.className = "grow";
+      const name = document.createElement("div");
+      name.className = "name";
+      name.textContent = item.name || item.alias || item.uid;
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = "UID " + item.uid + (item.relation ? " · " + item.relation : "") + (item.remark ? " · " + item.remark : "");
+      left.appendChild(name); left.appendChild(sub);
+      row.appendChild(left);
+      row.addEventListener("click", () => openProfile(item.uid));
+      box.appendChild(row);
+    });
+  } catch (error) {
+    box.textContent = "读取失败：" + error.message;
+  }
+}
+
+async function openProfile(uid) {
+  currentUid = uid;
+  try {
+    const data = objectFrom(await call("/profile?uid=" + encodeURIComponent(uid))) || {};
+    const p = data.profile || {};
+    document.getElementById("editor").hidden = false;
+    document.getElementById("editorTitle").textContent = "编辑画像 · " + (p.name || uid);
+    document.getElementById("fUid").value = uid;
+    document.getElementById("fName").value = p.name || "";
+    document.getElementById("fAlias").value = p.alias || "";
+    document.getElementById("fRelation").value = p.relation || "";
+    document.getElementById("fRemark").value = p.remark || "";
+    document.getElementById("memories").hidden = false;
+    renderMemories(data.memories || []);
+  } catch (error) {
+    toast("读取失败：" + error.message, true);
+  }
+}
+
+function renderMemories(items) {
+  const box = document.getElementById("memList");
+  box.textContent = "";
+  if (!items.length) { box.innerHTML = '<div class="empty">还没有记忆。</div>'; return; }
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "mem";
+    const txt = document.createElement("div");
+    txt.className = "txt";
+    txt.textContent = item.content;
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = (item.kind || "fact") + " · " + Number(item.importance || 0).toFixed(2);
+    const del = document.createElement("button");
+    del.className = "ghost";
+    del.textContent = "删";
+    del.addEventListener("click", async () => {
+      try {
+        await call("/memory/delete", { id: item.id });
+        toast("已删除");
+        openProfile(currentUid);
+        loadStatus();
+      } catch (error) { toast("删除失败：" + error.message, true); }
+    });
+    row.appendChild(txt); row.appendChild(meta); row.appendChild(del);
+    box.appendChild(row);
+  });
+}
+
+document.getElementById("btnSaveProfile").addEventListener("click", async () => {
+  try {
+    await call("/profile/save", {
+      uid: currentUid,
+      name: document.getElementById("fName").value,
+      alias: document.getElementById("fAlias").value,
+      relation: document.getElementById("fRelation").value,
+      remark: document.getElementById("fRemark").value,
+    });
+    toast("已保存");
+    loadProfiles();
+    loadStatus();
+  } catch (error) { toast("保存失败：" + error.message, true); }
+});
+
+document.getElementById("btnDeleteProfile").addEventListener("click", async () => {
+  if (!currentUid) return;
+  if (!window.confirm("删除 " + currentUid + " 的画像、记忆、关系边？不可恢复。")) return;
+  try {
+    await call("/profile/delete?uid=" + encodeURIComponent(currentUid) + "&confirm=1");
+    toast("已删除");
+    document.getElementById("editor").hidden = true;
+    document.getElementById("memories").hidden = true;
+    currentUid = "";
+    loadProfiles();
+    loadStatus();
+  } catch (error) { toast("删除失败：" + error.message, true); }
+});
+
+document.getElementById("btnCloseEditor").addEventListener("click", () => {
+  document.getElementById("editor").hidden = true;
+  document.getElementById("memories").hidden = true;
+});
+
+document.getElementById("btnAddMem").addEventListener("click", async () => {
+  const content = (document.getElementById("newMem").value || "").trim();
+  if (!content || !currentUid) { toast("先选个人再写内容", true); return; }
+  try {
+    await call("/memory/save", { uid: currentUid, content, kind: "manual", importance: 0.6 });
+    document.getElementById("newMem").value = "";
+    toast("已记住");
+    openProfile(currentUid);
+    loadStatus();
+  } catch (error) { toast("写入失败：" + error.message, true); }
+});
+
+document.getElementById("btnRefreshMem").addEventListener("click", () => currentUid && openProfile(currentUid));
+document.getElementById("btnReload").addEventListener("click", loadProfiles);
+document.getElementById("search").addEventListener("input", () => {
+  clearTimeout(window._st);
+  window._st = setTimeout(loadProfiles, 250);
+});
+
+async function loadRelations() {
+  const box = document.getElementById("relList");
+  box.textContent = "读取中…";
+  try {
+    const data = objectFrom(await call("/relations")) || {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    box.textContent = "";
+    if (!items.length) { box.innerHTML = '<div class="empty">还没有关系边。</div>'; return; }
+    items.forEach((edge) => {
+      const row = document.createElement("div");
+      row.className = "item";
+      const left = document.createElement("div");
+      left.className = "grow";
+      const name = document.createElement("div");
+      name.className = "name";
+      name.textContent = edge.a_uid + " ↔ " + edge.b_uid;
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = edge.relation + (edge.note ? " · " + edge.note : "");
+      left.appendChild(name); left.appendChild(sub);
+      row.appendChild(left);
+      const del = document.createElement("button");
+      del.className = "ghost danger";
+      del.textContent = "删";
+      del.addEventListener("click", async () => {
+        try {
+          await call("/relation/delete?a_uid=" + encodeURIComponent(edge.a_uid) + "&b_uid=" + encodeURIComponent(edge.b_uid));
+          loadRelations();
+          loadStatus();
+        } catch (error) { toast("删除失败：" + error.message, true); }
+      });
+      row.appendChild(del);
+      box.appendChild(row);
+    });
+  } catch (error) {
+    box.textContent = "读取失败：" + error.message;
+  }
+}
+
+document.getElementById("btnAddRel").addEventListener("click", async () => {
+  const a = (document.getElementById("relA").value || "").trim();
+  const b = (document.getElementById("relB").value || "").trim();
+  if (!a || !b || a === b) { toast("需要两个不同的 uid", true); return; }
+  try {
+    await call("/relation/save", {
+      a_uid: a, b_uid: b,
+      relation: document.getElementById("relType").value,
+      note: document.getElementById("relNote").value,
+    });
+    document.getElementById("relA").value = "";
+    document.getElementById("relB").value = "";
+    document.getElementById("relNote").value = "";
+    toast("已添加");
+    loadRelations();
+    loadStatus();
+  } catch (error) { toast("添加失败：" + error.message, true); }
+});
+
+loadStatus();
+loadProfiles();
+</script>
+</body>
+</html>
