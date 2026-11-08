@@ -1042,7 +1042,8 @@ class DataStore:
             payload = json.dumps(value, ensure_ascii=False)
         except Exception:
             return False
-        expires = _now() + int(ttl) if ttl and int(ttl) > 0 else 0
+        # ttl>0 正常过期；ttl<0 表示一写入就该过期；ttl=0 表示永不过期
+        expires = _now() + int(ttl) if ttl else 0
         with self.lock:
             self.conn.execute(
                 "INSERT INTO cache(bot_id, key, value, updated_at, expires_at) "
