@@ -236,7 +236,6 @@ class AmoDataPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         self.config = config or {}
-        self.name = PLUGIN_NAME
         self.plugin_dir = os.path.dirname(os.path.abspath(__file__))
         data_dir = str(getattr(self, "data_dir", "") or "").strip()
         if not data_dir:
@@ -322,8 +321,9 @@ class AmoDataPlugin(Star):
             ("/schedule/delete", self.api_schedule_delete),
             ("/maintenance", self.api_maintenance),
         ]
-        prefixes = [PLUGIN_NAME, "Astr_Amo_data", getattr(self, "name", PLUGIN_NAME)]
+        prefixes = [PLUGIN_NAME, getattr(self, "name", PLUGIN_NAME)]
         seen = set()
+        registered = 0
         for prefix in prefixes:
             clean = str(prefix or "").strip("/")
             if not clean or clean in seen:
@@ -335,7 +335,13 @@ class AmoDataPlugin(Star):
                         "/" + clean + path, self._guard(handler), ["GET", "POST"], path
                     )
                 except Exception as exc:
-                    logger.debug("[amo_data] 注册 %s%s 失败: %s" % (clean, path, exc))
+                    logger.warning("[amo_data] 注册 %s%s 失败: %s" % (clean, path, exc))
+                else:
+                    registered += 1
+        if registered:
+            logger.info("[amo_data] Web 面板接口已注册 %d 条" % registered)
+        else:
+            logger.warning("[amo_data] Web 面板接口一条都没注册成功，面板会显示“后端未就绪”")
 
     def _guard(self, handler):
         async def wrapper(*args, **kwargs):
