@@ -48,7 +48,7 @@ except ImportError:  # 单文件加载时的兜底
     from store import DataStore  # type: ignore
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.0.8"
+PLUGIN_VERSION = "2.2.0"
 DEFAULT_BOT_ID = "default"
 
 
@@ -194,9 +194,9 @@ class MemoryAPI:
             logger.debug("[amo_data] 写聊天记录失败: %s" % exc)
             return 0
 
-    async def list_messages(self, bot_id: str, umo: str = "", limit: int = 200) -> list:
+    async def list_messages(self, bot_id: str, umo: str = "", limit: int = 200, uid: str = "") -> list:
         try:
-            return self._store.list_messages(self._bot(bot_id), umo, limit)
+            return self._store.list_messages(self._bot(bot_id), umo, limit, uid=uid)
         except Exception as exc:
             logger.debug("[amo_data] 读聊天记录失败: %s" % exc)
             return []
@@ -637,8 +637,11 @@ class AmoDataPlugin(Star):
         except (TypeError, ValueError):
             pid = 0
         platform = str(payload.get("platform") or "").strip()
+        uid = str(payload.get("uid") or "").strip()
         return {"code": 0, "data": {
-            "items": self.store.list_messages(bot_id, umo, limit, pid=pid, platform=platform)
+            "items": self.store.list_messages(
+                bot_id, umo, limit, pid=pid, platform=platform, uid=uid
+            )
         }}
 
     async def api_message_delete(self):

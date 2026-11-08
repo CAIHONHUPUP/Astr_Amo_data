@@ -106,6 +106,13 @@ class PersonTests(unittest.TestCase):
         self.assertEqual(found["name"], "阿墨")
         self.assertEqual(self.store.find_profile("不存在"), {})
 
+    def test_list_messages_filter_by_uid(self):
+        self.store.add_message(self.bot, "aiocqhttp:FriendMessage:1", "10001", "甲", "user", "a")
+        self.store.add_message(self.bot, "aiocqhttp:FriendMessage:1", "10002", "乙", "user", "b")
+        rows = self.store.list_messages(self.bot, uid="10001")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["content"], "a")
+
     def test_old_db_gets_platform_columns(self):
         # 模拟老库：建表时没有 platform / pid
         import sqlite3

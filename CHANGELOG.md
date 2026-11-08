@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.2.0
+
+### 给陪伴的「上下文钩子」加按 uid 查
+
+- `list_messages` 新增 `uid` 过滤（store / MemoryAPI / `/messages` 接口都支持）；
+- 陪伴关掉本地聊天缓存后，靠这个接口按会话（umo）或按人（uid）把最近上下文捞回去；
+- 新增单测 `test_list_messages_filter_by_uid`。
+
 ## 2.0.8
 
 ### 修：面板聚合模式下点进画像全是空

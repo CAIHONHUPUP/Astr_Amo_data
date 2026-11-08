@@ -844,7 +844,7 @@ class DataStore:
             return int(cur.lastrowid or 0)
 
     def list_messages(self, bot_id: str, umo: str = "", limit: int = 200,
-                      pid: int = 0, platform: str = "") -> List[Dict[str, Any]]:
+                      pid: int = 0, platform: str = "", uid: str = "") -> List[Dict[str, Any]]:
         where, params = _bot_filter(bot_id)
         sql = ("SELECT id, umo, uid, name, role, content, created_at, compressed, "
                "platform, pid FROM messages WHERE 1=1" + where)
@@ -857,6 +857,9 @@ class DataStore:
         if platform:
             sql += " AND platform=?"
             params.append(str(platform))
+        if uid:
+            sql += " AND uid=?"
+            params.append(str(uid))
         sql += " ORDER BY id DESC LIMIT ?"
         params.append(max(1, min(int(limit), 1000)))
         with self.lock:
