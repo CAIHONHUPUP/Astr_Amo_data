@@ -358,14 +358,27 @@ async function httpCall(action, payload) {
   throw new Error(errors[0] || "无法连接插件接口");
 }
 
+function withTimeout(promise, ms, label) {
+  let timer = null;
+  const timeout = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error((label || "接口") + " 超时")), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 async function call(action, payload) {
   const body = (payload === undefined || payload === null)
     ? (WRITE_ACTIONS.has(action) ? {} : payload)
     : payload;
-  const bridged = await bridgeCall(action, body);
+  let bridged = null;
+  try {
+    bridged = await withTimeout(bridgeCall(action, body), 8000, action);
+  } catch (error) {
+    bridged = { __error: error.message };
+  }
   if (bridged && !bridged.__error) return bridged;
   try {
-    return await httpCall(action, body);
+    return await withTimeout(httpCall(action, body), 15000, action);
   } catch (error) {
     throw new Error((bridged && bridged.__error) || error.message || "接口未就绪");
   }
@@ -954,6 +967,37 @@ async function loadRelations() {
 }
 
 document.getElementById("btnRelReload").addEventListener("click", loadRelations);
+
+async function loadChat() {
+  const box = document.getElementById("chatList");
+  box.textContent = "读取中…";
+  try {
+    const umo = (document.getElementById("chatUmo").value || "").trim();
+    const data = objectFrom(await call("messages", { umo, limit: 300 })) || {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    box.textContent = "";
+    if (!items.length) {
+      box.innerHTML = '<div class="empty">还没有聊天记录。</div>';
+      return;
+    }
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "item";
+      const head = document.createElement("div");
+      head.className = "sub";
+      const who = item.role === "bot" ? "她" : (item.name || "他");
+      head.textContent = [fmtTime(item.created_at), who, item.platform, item.umo]
+        .filter(Boolean).join(" · ");
+      const body = document.createElement("div");
+      body.textContent = (item.role === "summary" ? "【摘要】" : "") + (item.content || "");
+      row.appendChild(head);
+      row.appendChild(body);
+      box.appendChild(row);
+    });
+  } catch (error) {
+    box.textContent = "读取失败：" + error.message;
+  }
+}
 
 document.getElementById("btnChatReload").addEventListener("click", loadChat);
 document.getElementById("btnChatClear").addEventListener("click", async () => {
