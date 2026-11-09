@@ -47,8 +47,19 @@ try:
 except ImportError:  # 单文件加载时的兜底
     from store import DataStore  # type: ignore
 
+try:
+    from .time_query import parse_time_span, describe_span
+except ImportError:  # 单文件加载时的兜底
+    try:
+        from time_query import parse_time_span, describe_span  # type: ignore
+    except Exception:  # pragma: no cover - 极端情况下退化成"不识别时间"
+        def parse_time_span(*args, **kwargs):
+            return None
+        def describe_span(*args, **kwargs):
+            return ""
+
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.4.2"
+PLUGIN_VERSION = "2.5.0"
 DEFAULT_BOT_ID = "default"
 
 
@@ -201,6 +212,47 @@ class MemoryAPI:
             logger.debug("[amo_data] 读聊天记录失败: %s" % exc)
             return []
 
+    async def recall_messages(self, bot_id: str, query: str = "", umo: str = "",
+                              uid: str = "", limit: int = 200) -> dict:
+        """按时间说法取聊天记录：年 → 月日 → 小时 → 具体消息（四级漏斗）。
+
+        查询里没提时间就退回最近消息；返回的正文**不带时间戳**，
+        时间只放在 ``span`` 里（调用方要显示日期时自己用）。
+        """
+        try:
+            span = parse_time_span(query)
+            if not span:
+                rows = self._store.list_messages(self._bot(bot_id), umo, limit, uid=uid)
+                return {"messages": list(reversed(rows)), "span": None, "path": {},
+                        "label": "最近 %d 条" % len(rows)}
+            rows, path = self._store.hierarchical_messages(
+                self._bot(bot_id), span, umo=umo, uid=uid, limit=limit,
+            )
+            return {"messages": rows, "span": span, "path": path,
+                    "label": describe_span(span)}
+        except Exception as exc:
+            logger.debug("[amo_data] 按时间取聊天记录失败: %s" % exc)
+            return {"messages": [], "span": None, "path": {}, "label": ""}
+
+    async def compress_memories(self, bot_id: str, apply: bool = True) -> dict:
+        """周度整理：合并同天摘要、近重复记忆标过期（不删数据）。"""
+        try:
+            return self._store.compress_memories(self._bot(bot_id), apply=bool(apply))
+        except Exception as exc:
+            logger.debug("[amo_data] 记忆压缩失败: %s" % exc)
+            return {"merged_summaries": 0, "merged_near_duplicates": 0, "applied": bool(apply)}
+
+    async def archive_stale(self, bot_id: str, days: int = 90,
+                            max_importance: float = 0.3, apply: bool = True) -> dict:
+        """把长期没被想起的低重要度记忆归档（不删除）。"""
+        try:
+            return self._store.archive_stale(
+                self._bot(bot_id), days=days, max_importance=max_importance, apply=bool(apply)
+            )
+        except Exception as exc:
+            logger.debug("[amo_data] 记忆归档失败: %s" % exc)
+            return {"candidate": 0, "archived": 0, "ids": []}
+
     async def delete_message(self, bot_id: str, message_id: int) -> bool:
         try:
             return self._store.delete_message(self._bot(bot_id), message_id)
@@ -307,7 +359,7 @@ class AmoDataPlugin(Star):
         os.makedirs(data_dir, exist_ok=True)
         self.data_dir = data_dir
         self.db_path = os.path.join(data_dir, "amo_data.db")
-        self.store = DataStore(self.db_path)
+        self.store = DataStore(self.db_path, settings=self._store_settings())
         self.mem = MemoryAPI(self.store)
         self._safe_register_web_apis()
         self._loop_task = None
@@ -318,12 +370,83 @@ class AmoDataPlugin(Star):
             self._loop_task = None
         logger.info("[amo_data] 我想永远记住你 %s 已加载（%s）" % (PLUGIN_VERSION, self.db_path))
 
+    async def _maybe_weekly_cleanup(self, bot_id: str) -> dict:
+        """每周只跑一次：合并同天摘要、近重复去重、归档低价值老记忆。"""
+        import datetime as _dt
+        week = _dt.date.today().strftime("%G-W%V")
+        key = "cleanup_week:" + week
+        try:
+            if self.store.cache_get(bot_id, key):
+                return {"skipped": True}
+        except Exception:
+            pass
+        result = {}
+        try:
+            result["compress"] = await self.mem.compress_memories(bot_id, apply=True)
+        except Exception as exc:
+            result["compress"] = {"error": str(exc)}
+        try:
+            result["archive"] = await self.mem.archive_stale(bot_id, 90, 0.3, apply=True)
+        except Exception as exc:
+            result["archive"] = {"error": str(exc)}
+        try:
+            self.store.cache_set(bot_id, key, "1", ttl=8 * 86400)
+        except Exception:
+            pass
+        logger.info("[amo_data] 每周记忆整理: %s" % result)
+        return result
+
+    async def api_memory_maintain(self):
+        """面板/脚本手动触发整理；payload: {apply: false} 可先预演。"""
+        payload = await self._body()
+        bot_id = self._bot_id(payload)
+        apply = payload.get("apply", True)
+        if isinstance(apply, str):
+            apply = apply.strip().lower() not in ("0", "false", "no", "off")
+        out = {"compress": await self.mem.compress_memories(bot_id, apply=bool(apply)),
+               "archive": await self.mem.archive_stale(bot_id, 90, 0.3, apply=bool(apply))}
+        return {"code": 0, "data": out, "applied": bool(apply)}
+
     # ---------- 配置 ----------
     def _cfg_int(self, key: str, default: int) -> int:
         try:
             return int(self.config.get(key, default))
         except (TypeError, ValueError):
             return default
+
+    def _cfg_float(self, key: str, default: float) -> float:
+        try:
+            return float(self.config.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _cfg_bool(self, key: str, default: bool) -> bool:
+        value = self.config.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on", "是", "开")
+        return bool(value)
+
+    def _store_settings(self) -> dict:
+        """把面板配置翻译成 DataStore 的检索参数（缺的用默认值）。"""
+        return {
+            "pool_size": self._cfg_int("recall_pool_size", 400),
+            "min_matched_terms": self._cfg_int("recall_min_matched_terms", 1),
+            "forget_half_life_days": self._cfg_float("recall_half_life_days", 45.0),
+            "importance_decay": self._cfg_float("recall_importance_decay", 0.10),
+            "auto_dedupe": self._cfg_bool("auto_dedupe", True),
+            "near_duplicate_ratio": self._cfg_float("auto_dedupe_ratio", 0.92),
+            "embedding_enabled": self._cfg_bool("embedding_enabled", False),
+            "embedding_base": str(self.config.get("embedding_base") or "http://127.0.0.1:11434"),
+            "embedding_model": str(self.config.get("embedding_model") or "bge-m3"),
+            "embedding_timeout": self._cfg_float("embedding_timeout", 3.0),
+            "vec_weight": self._cfg_float("recall_vec_weight", 0.45),
+            "vec_min_cos": self._cfg_float("recall_vec_min_cos", 0.45),
+            "vec_min_margin": self._cfg_float("recall_vec_min_margin", 0.08),
+            "embedding_backfill": self._cfg_bool("embedding_backfill", True),
+            "embedding_backfill_limit": self._cfg_int("embedding_backfill_limit", 200),
+        }
 
     @property
     def chat_days(self) -> int:
@@ -388,6 +511,7 @@ class AmoDataPlugin(Star):
             ("/memories", self.api_memories),
             ("/memory/save", self.api_memory_save),
             ("/memory/delete", self.api_memory_delete),
+            ("/memory/maintain", self.api_memory_maintain),
             ("/relations", self.api_relations),
             ("/relation/save", self.api_relation_save),
             ("/relation/delete", self.api_relation_delete),
@@ -443,6 +567,13 @@ class AmoDataPlugin(Star):
                 "db": self.db_path,
                 "counts": self.store.stats(bot_id),
                 "bots": self.store.bot_ids(),
+                "embedding": self.store.embedding_stats(),
+                "recall": {
+                    "pool_size": self.store.setting("pool_size"),
+                    "min_matched_terms": self.store.setting("min_matched_terms"),
+                    "half_life_days": self.store.setting("forget_half_life_days"),
+                    "auto_dedupe": self.store.setting("auto_dedupe"),
+                },
             },
         }
 
@@ -654,6 +785,14 @@ class AmoDataPlugin(Star):
             pid = 0
         platform = str(payload.get("platform") or "").strip()
         uid = str(payload.get("uid") or "").strip()
+        query = str(payload.get("query") or "").strip()
+        if query:
+            # 带时间说法（昨天下午 / 上周三 / 11月6号晚上10点）就走分层检索：
+            # 年 → 月日 → 小时 → 具体消息，正文不带时间戳
+            result = await self.mem.recall_messages(
+                bot_id, query=query, umo=umo, uid=uid, limit=limit
+            )
+            return {"code": 0, "data": result}
         return {"code": 0, "data": {
             "items": self.store.list_messages(
                 bot_id, umo, limit, pid=pid, platform=platform, uid=uid
@@ -761,6 +900,17 @@ class AmoDataPlugin(Star):
                     await self.mem.purge_logs(bot_id, self.log_days)
                 except Exception as exc:
                     logger.debug("[amo_data] 日志清理失败: %s" % exc)
+                try:
+                    await self._maybe_weekly_cleanup(bot_id)
+                except Exception as exc:
+                    logger.debug("[amo_data] 每周记忆整理失败: %s" % exc)
+                try:
+                    if self.store.setting("embedding_enabled"):
+                        self.store.backfill_embeddings(
+                            limit=self._cfg_int("embedding_backfill_limit", 200)
+                        )
+                except Exception as exc:
+                    logger.debug("[amo_data] 向量补全失败: %s" % exc)
                 try:
                     from astrbot.core.utils.astrbot_path import get_astrbot_data_path  # noqa: F401
                 except Exception:
