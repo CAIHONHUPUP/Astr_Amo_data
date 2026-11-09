@@ -936,7 +936,7 @@ class DataStore:
                 self.conn.execute(
                     "INSERT INTO messages(bot_id, umo, uid, name, role, content, created_at, "
                     "compressed, platform, pid) VALUES(?,?,?,?,?,?,?,1,?,?)",
-                    (str(bot_id), umo, "", "摘要", "bot", summary, stamp,
+                    (str(bot_id), umo, "", "摘要", "summary", summary, stamp,
                      platform_of_umo(umo), int(items[0]["pid"] or 0)
                      if "pid" in items[0].keys() else 0),
                 )
