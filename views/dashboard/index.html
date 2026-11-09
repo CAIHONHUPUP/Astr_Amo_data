@@ -155,6 +155,14 @@
       </div>
       <input id="relNote" placeholder="备注（可选）" style="margin-top:8px">
     </div>
+    <div class="card">
+      <div class="row">
+        <strong class="grow">关系图谱</strong>
+        <span class="hint" id="relGraphHint">拖动节点看看</span>
+      </div>
+      <canvas id="relGraph" style="width:100%;height:320px;display:block"></canvas>
+      <div class="hint" id="relLegend"></div>
+    </div>
     <div class="list" id="relList"></div>
   </section>
 
@@ -681,6 +689,158 @@ document.getElementById("btnPersonMerge").addEventListener("click", async () => 
   loadPersons();
 });
 
+/* ---------- 关系图谱（力导向，纯 canvas，无外部依赖） ---------- */
+const REL_COLORS = {
+  家人: "#d98c8c", 恋人: "#e06a9a", 朋友: "#7aa8e0", 同事: "#6fc0a8",
+  同学: "#c9a24d", 熟人: "#9b8fd0", 陌生人: "#9aa0a6", 仇人: "#c0504d",
+};
+let graphState = null;
+
+function relColor(relation) {
+  return REL_COLORS[relation] || "#9aa0a6";
+}
+
+function buildGraph(items) {
+  const nodes = new Map();
+  const edges = [];
+  items.forEach((edge) => {
+    const a = String(edge.a_uid || "");
+    const b = String(edge.b_uid || "");
+    if (!a || !b) return;
+    if (!nodes.has(a)) nodes.set(a, { id: a, name: edge.a_name || a, x: 0, y: 0, vx: 0, vy: 0 });
+    if (!nodes.has(b)) nodes.set(b, { id: b, name: edge.b_name || b, x: 0, y: 0, vx: 0, vy: 0 });
+    edges.push({ a, b, relation: edge.relation || "朋友" });
+  });
+  const list = [...nodes.values()];
+  const radius = Math.min(160, 40 + list.length * 6);
+  list.forEach((node, index) => {
+    const angle = (index / Math.max(1, list.length)) * Math.PI * 2;
+    node.x = Math.cos(angle) * radius;
+    node.y = Math.sin(angle) * radius;
+  });
+  return { nodes: list, edges, index: nodes };
+}
+
+function stepGraph(graph, width, height) {
+  const centerX = width / 2, centerY = height / 2;
+  const nodes = graph.nodes;
+  for (let i = 0; i < nodes.length; i += 1) {
+    const a = nodes[i];
+    for (let j = i + 1; j < nodes.length; j += 1) {
+      const b = nodes[j];
+      let dx = a.x - b.x, dy = a.y - b.y;
+      let dist = Math.hypot(dx, dy) || 0.01;
+      const force = Math.min(1600, 9000 / (dist * dist));
+      const fx = (dx / dist) * force, fy = (dy / dist) * force;
+      a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+    }
+    // 往中心收一点，避免飞出去
+    a.vx += (centerX - a.x) * 0.012;
+    a.vy += (centerY - a.y) * 0.012;
+  }
+  graph.edges.forEach((edge) => {
+    const a = graph.index.get(edge.a), b = graph.index.get(edge.b);
+    if (!a || !b) return;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy) || 0.01;
+    const force = (dist - 90) * 0.02;
+    const fx = (dx / dist) * force, fy = (dy / dist) * force;
+    a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+  });
+  nodes.forEach((node) => {
+    if (node.dragging) return;
+    node.vx *= 0.82; node.vy *= 0.82;
+    node.x += node.vx; node.y += node.vy;
+    node.x = Math.max(24, Math.min(width - 24, node.x));
+    node.y = Math.max(24, Math.min(height - 24, node.y));
+  });
+}
+
+function drawGraph(ctx, graph, width, height, activeId) {
+  ctx.clearRect(0, 0, width, height);
+  graph.edges.forEach((edge) => {
+    const a = graph.index.get(edge.a), b = graph.index.get(edge.b);
+    if (!a || !b) return;
+    ctx.strokeStyle = relColor(edge.relation);
+    ctx.globalAlpha = activeId && (edge.a === activeId || edge.b === activeId) ? 0.95 : 0.35;
+    ctx.lineWidth = activeId && (edge.a === activeId || edge.b === activeId) ? 2.2 : 1.2;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  });
+  ctx.globalAlpha = 1;
+  graph.nodes.forEach((node) => {
+    const active = node.id === activeId;
+    ctx.beginPath();
+    ctx.fillStyle = active ? "#e06a9a" : "#fff";
+    ctx.strokeStyle = active ? "#e06a9a" : "#c9b8d4";
+    ctx.lineWidth = active ? 2.5 : 1.5;
+    ctx.arc(node.x, node.y, active ? 9 : 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#4a3f52";
+    ctx.font = "11px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    const label = node.name.length > 8 ? node.name.slice(0, 8) + "…" : node.name;
+    ctx.fillText(label, node.x, node.y + 20);
+  });
+}
+
+function renderGraph(items) {
+  const canvas = document.getElementById("relGraph");
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  const width = wrap.clientWidth - 24;
+  const height = 320;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const graph = buildGraph(items);
+  graphState = graph;
+  if (!graph.nodes.length) {
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "#9a8fa3";
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("还没有关系，先加一条或让陪伴自己记", width / 2, height / 2);
+    return;
+  }
+  for (let i = 0; i < 220; i += 1) stepGraph(graph, width, height);
+  const activeId = window.__graphActive || "";
+  drawGraph(ctx, graph, width, height, activeId);
+
+  const legend = document.getElementById("relLegend");
+  const kinds = [...new Set(graph.edges.map((edge) => edge.relation))];
+  legend.innerHTML = kinds.map((kind) =>
+    '<span style="display:inline-block;margin-right:10px"><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' +
+    relColor(kind) + ';margin-right:4px"></i>' + kind + "</span>").join("");
+
+  canvas.onmousedown = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = event.clientX - rect.left, my = event.clientY - rect.top;
+    const hit = graph.nodes.find((node) => Math.hypot(node.x - mx, node.y - my) < 14);
+    if (!hit) return;
+    hit.dragging = true;
+    window.__graphActive = hit.id;
+    const move = (ev) => {
+      hit.x = Math.max(24, Math.min(width - 24, ev.clientX - rect.left));
+      hit.y = Math.max(24, Math.min(height - 24, ev.clientY - rect.top));
+      stepGraph(graph, width, height);
+      drawGraph(ctx, graph, width, height, hit.id);
+    };
+    const up = () => {
+      hit.dragging = false;
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+}
+
 /* ---------- 关系网 ---------- */
 async function loadRelations() {
   const box = document.getElementById("relList");
@@ -688,6 +848,8 @@ async function loadRelations() {
   try {
     const data = objectFrom(await call("relations")) || {};
     const items = Array.isArray(data.items) ? data.items : [];
+    window.__graphActive = "";
+    renderGraph(items);
     box.textContent = "";
     if (!items.length) { box.innerHTML = '<div class="empty">还没有关系边。</div>'; return; }
     items.forEach((edge) => {
