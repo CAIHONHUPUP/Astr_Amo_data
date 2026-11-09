@@ -778,8 +778,8 @@ function renderGraph(items) {
   const canvas = document.getElementById("relGraph");
   if (!canvas) return;
   const wrap = canvas.parentElement;
-  const width = wrap.clientWidth - 24;
-  const height = 320;
+  const width = canvas.clientWidth || (wrap.clientWidth - 24);
+  const height = canvas.clientHeight || 320;
   const dpr = window.devicePixelRatio || 1;
   canvas.width = width * dpr;
   canvas.height = height * dpr;
@@ -804,27 +804,44 @@ function renderGraph(items) {
   legend.innerHTML = kinds.map((kind) =>
     '<span style="display:inline-block;margin-right:10px"><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' +
     relColor(kind) + ';margin-right:4px"></i>' + kind + "</span>").join("");
+  legend.innerHTML += '<span style="color:#9a8fa3">拖动节点可调整布局</span>';
 
-  canvas.onmousedown = (event) => {
+  canvas.style.touchAction = "none";
+  canvas.style.cursor = "grab";
+  const pointOf = (ev) => {
     const rect = canvas.getBoundingClientRect();
-    const mx = event.clientX - rect.left, my = event.clientY - rect.top;
-    const hit = graph.nodes.find((node) => Math.hypot(node.x - mx, node.y - my) < 14);
+    return {
+      x: (ev.clientX - rect.left) * (width / Math.max(1, rect.width)),
+      y: (ev.clientY - rect.top) * (height / Math.max(1, rect.height)),
+    };
+  };
+  canvas.onpointerdown = (event) => {
+    const point = pointOf(event);
+    const hit = graph.nodes.find((node) => Math.hypot(node.x - point.x, node.y - point.y) < 20);
     if (!hit) return;
+    event.preventDefault();
+    try { canvas.setPointerCapture(event.pointerId); } catch (err) {}
+    canvas.style.cursor = "grabbing";
     hit.dragging = true;
     window.__graphActive = hit.id;
+    const offsetX = hit.x - point.x, offsetY = hit.y - point.y;
     const move = (ev) => {
-      hit.x = Math.max(24, Math.min(width - 24, ev.clientX - rect.left));
-      hit.y = Math.max(24, Math.min(height - 24, ev.clientY - rect.top));
+      const p = pointOf(ev);
+      hit.x = Math.max(18, Math.min(width - 18, p.x + offsetX));
+      hit.y = Math.max(18, Math.min(height - 18, p.y + offsetY));
       stepGraph(graph, width, height);
       drawGraph(ctx, graph, width, height, hit.id);
     };
     const up = () => {
       hit.dragging = false;
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
+      canvas.style.cursor = "grab";
+      canvas.onpointermove = null;
+      canvas.onpointerup = null;
+      canvas.onpointercancel = null;
     };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
+    canvas.onpointermove = move;
+    canvas.onpointerup = up;
+    canvas.onpointercancel = up;
   };
 }
 
