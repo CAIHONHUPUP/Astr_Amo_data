@@ -266,6 +266,17 @@ class MemoryAPI:
             logger.debug("[amo_data] 读增量聊天失败: %s" % exc)
             return []
 
+    async def messages_between(self, bot_id: str, start_ts: int, end_ts: int,
+                               uid: str = "", limit: int = 2000) -> list:
+        """某个时间段内的聊天（陪伴插件写日记用）。"""
+        try:
+            return self._store.messages_between(
+                self._bot(bot_id), start_ts, end_ts, uid, limit
+            )
+        except Exception as exc:
+            logger.debug("[amo_data] 读时间段聊天失败: %s" % exc)
+            return []
+
     async def recall_messages(self, bot_id: str, query: str = "", umo: str = "",
                               uid: str = "", limit: int = 200) -> dict:
         """按时间说法取聊天记录：年 → 月日 → 小时 → 具体消息（四级漏斗）。

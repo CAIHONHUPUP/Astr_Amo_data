@@ -1786,6 +1786,23 @@ class DataStore:
             rows = self.conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
+    def messages_between(self, bot_id: str, start_ts: int, end_ts: int,
+                         uid: str = "", limit: int = 2000) -> List[Dict[str, Any]]:
+        """取某个时间段内的聊天（给日记用：按天汇总，跨平台）。"""
+        where, params = _bot_filter(bot_id)
+        sql = ("SELECT id, umo, uid, name, role, content, created_at, platform, pid "
+               "FROM messages WHERE 1=1" + where +
+               " AND created_at>=? AND created_at<?")
+        params.extend([int(start_ts), int(end_ts)])
+        if uid:
+            sql += " AND uid=?"
+            params.append(str(uid))
+        sql += " ORDER BY created_at ASC, id ASC LIMIT ?"
+        params.append(max(1, min(int(limit), 5000)))
+        with self.lock:
+            rows = self.conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
     def list_messages(self, bot_id: str, umo: str = "", limit: int = 200,
                       pid: int = 0, platform: str = "", uid: str = "") -> List[Dict[str, Any]]:
         where, params = _bot_filter(bot_id)
