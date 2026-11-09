@@ -2064,6 +2064,31 @@ class DataStore:
 
     # ---------- 关系网 ----------
 
+
+    def _display_name(self, bot_id: str, uid: str) -> str:
+        """关系图上的显示名：先画像，再人物卡，最后空。"""
+        uid = str(uid or "")
+        if not uid:
+            return ""
+        try:
+            row = self.conn.execute(
+                "SELECT name FROM profiles WHERE bot_id=? AND uid=? AND name!=''", (bot_id, uid)
+            ).fetchone()
+            if row and str(row["name"] or "").strip():
+                return str(row["name"]).strip()
+        except Exception:
+            pass
+        try:
+            row = self.conn.execute(
+                "SELECT p.name FROM person_links l JOIN persons p ON p.pid=l.pid "
+                "WHERE l.bot_id=? AND l.uid=? AND p.name!='' LIMIT 1", (bot_id, uid)
+            ).fetchone()
+            if row and str(row["name"] or "").strip():
+                return str(row["name"]).strip()
+        except Exception:
+            pass
+        return ""
+
     def list_relations(self, bot_id: str, uid: str = "") -> List[Dict[str, Any]]:
         where, params = _bot_filter(bot_id)
         sql = "SELECT a_uid, b_uid, relation, note, updated_at FROM relations WHERE 1=1" + where
@@ -2073,7 +2098,13 @@ class DataStore:
         sql += " ORDER BY updated_at DESC"
         with self.lock:
             rows = self.conn.execute(sql, params).fetchall()
-        return [dict(row) for row in rows]
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["a_name"] = self._display_name(str(bot_id), item.get("a_uid"))
+            item["b_name"] = self._display_name(str(bot_id), item.get("b_uid"))
+            out.append(item)
+        return out
 
     def save_relation(
         self, bot_id: str, a_uid: str, b_uid: str, relation: str, note: str = ""

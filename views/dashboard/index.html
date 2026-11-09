@@ -308,7 +308,12 @@ async function bridgeCall(action, payload) {
     const attempt = payload && typeof b.apiPost === "function"
       ? b.apiPost(action, payload)
       : b.apiGet(action, payload || {});
-    let result = await attempt;
+    // 页面桥接有时会一直不回应（比如宿主没实现 api:get）：
+    // 最多等 2 秒就回落到 HTTP，避免整个面板卡在「读取中…」。
+    let result = await Promise.race([
+      attempt,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("插件桥接超时（回落到 HTTP）")), 2000)),
+    ]);
     if (result && typeof result.json === "function") result = await result.json();
     if (typeof result === "string") {
       try { result = JSON.parse(result); } catch (error) {}

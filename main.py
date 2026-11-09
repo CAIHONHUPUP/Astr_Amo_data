@@ -754,7 +754,9 @@ class AmoDataPlugin(Star):
         for item in items:
             for side in ("a", "b"):
                 key = str(item.get(side + "_uid") or "")
-                item[side + "_name"] = names.get(key, "")
+                # 画像里没有就保留 store 用人物卡算出来的名字（别覆盖成空）
+                if names.get(key):
+                    item[side + "_name"] = names[key]
         return {"code": 0, "data": {"items": items}}
 
     async def api_relation_save(self):
