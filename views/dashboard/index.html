@@ -50,16 +50,16 @@
 </header>
 
 <nav>
-  <button class="active" data-tab="profiles">画像</button>
+  <button class="active" data-tab="relations">关系网</button>
+  <button data-tab="profiles">画像</button>
   <button data-tab="persons">人物</button>
-  <button data-tab="relations">关系网</button>
   <button data-tab="chat">聊天</button>
   <button data-tab="schedule">日程</button>
   <button data-tab="logs">日志</button>
 </nav>
 
 <main>
-  <section class="panel active" id="panel-profiles">
+  <section class="panel" id="panel-profiles">
     <div class="card">
       <div class="row">
         <input class="grow" id="search" placeholder="搜 uid / 称呼 / 备注">
@@ -141,29 +141,16 @@
     </div>
   </section>
 
-  <section class="panel" id="panel-relations">
-    <div class="card">
-      <div class="row">
-        <input class="grow" id="relA" placeholder="用户 A 的 uid">
-        <input class="grow" id="relB" placeholder="用户 B 的 uid">
-        <select id="relType">
-          <option>家人</option><option>恋人</option><option selected>朋友</option>
-          <option>同事</option><option>同学</option><option>熟人</option>
-          <option>陌生人</option><option>仇人</option>
-        </select>
-        <button class="primary" id="btnAddRel">添加</button>
-      </div>
-      <input id="relNote" placeholder="备注（可选）" style="margin-top:8px">
-    </div>
+  <section class="panel active" id="panel-relations">
     <div class="card">
       <div class="row">
         <strong class="grow">关系图谱</strong>
-        <span class="hint" id="relGraphHint">拖动节点看看</span>
+        <button class="ghost" id="btnRelReload">刷新</button>
       </div>
-      <canvas id="relGraph" style="width:100%;height:320px;display:block"></canvas>
+      <canvas id="relGraph" style="width:100%;height:340px;display:block"></canvas>
       <div class="hint" id="relLegend"></div>
+      <div class="hint">只读展示；增删改在「陪伴」面板里点神经元图标。</div>
     </div>
-    <div class="list" id="relList"></div>
   </section>
 
   <section class="panel" id="panel-chat">
@@ -843,108 +830,18 @@ function renderGraph(items) {
 
 /* ---------- 关系网 ---------- */
 async function loadRelations() {
-  const box = document.getElementById("relList");
-  box.textContent = "读取中…";
   try {
     const data = objectFrom(await call("relations")) || {};
     const items = Array.isArray(data.items) ? data.items : [];
     window.__graphActive = "";
     renderGraph(items);
-    box.textContent = "";
-    if (!items.length) { box.innerHTML = '<div class="empty">还没有关系边。</div>'; return; }
-    items.forEach((edge) => {
-      const row = document.createElement("div");
-      row.className = "item";
-      const left = document.createElement("div");
-      left.className = "grow";
-      const name = document.createElement("div");
-      name.className = "name";
-      const aLabel = (edge.a_name ? edge.a_name + "（" + edge.a_uid + "）" : edge.a_uid);
-      const bLabel = (edge.b_name ? edge.b_name + "（" + edge.b_uid + "）" : edge.b_uid);
-      name.textContent = aLabel + " ↔ " + bLabel;
-      const sub = document.createElement("div");
-      sub.className = "sub";
-      sub.textContent = edge.relation + (edge.note ? " · " + edge.note : "");
-      left.appendChild(name); left.appendChild(sub);
-      row.appendChild(left);
-      const del = document.createElement("button");
-      del.className = "ghost danger";
-      del.textContent = "删";
-      del.addEventListener("click", async () => {
-        try {
-          await call("relation/delete", { a_uid: edge.a_uid, b_uid: edge.b_uid });
-          loadRelations();
-          loadStatus();
-        } catch (error) { toast("删除失败：" + error.message, true); }
-      });
-      row.appendChild(del);
-      box.appendChild(row);
-    });
   } catch (error) {
-    box.textContent = "读取失败：" + error.message;
+    const box = document.getElementById("relLegend");
+    if (box) box.textContent = "读取失败：" + error.message;
   }
 }
 
-document.getElementById("btnAddRel").addEventListener("click", async () => {
-  const a = (document.getElementById("relA").value || "").trim();
-  const b = (document.getElementById("relB").value || "").trim();
-  if (!a || !b || a === b) { toast("需要两个不同的 uid", true); return; }
-  try {
-    await call("relation/save", {
-      a_uid: a, b_uid: b,
-      relation: document.getElementById("relType").value,
-      note: document.getElementById("relNote").value,
-    });
-    document.getElementById("relA").value = "";
-    document.getElementById("relB").value = "";
-    document.getElementById("relNote").value = "";
-    toast("已添加");
-    loadRelations();
-    loadStatus();
-  } catch (error) { toast("添加失败：" + error.message, true); }
-});
-
-/* ---------- 聊天 ---------- */
-async function loadChat() {
-  const box = document.getElementById("chatList");
-  box.textContent = "读取中…";
-  try {
-    const umo = (document.getElementById("chatUmo").value || "").trim();
-    const data = objectFrom(await call("messages", umo ? { umo } : undefined)) || {};
-    const items = Array.isArray(data.items) ? data.items : [];
-    box.textContent = "";
-    if (!items.length) { box.innerHTML = '<div class="empty">还没有聊天记录。</div>'; return; }
-    items.forEach((item) => {
-      const row = document.createElement("div");
-      row.className = "msg";
-      const who = document.createElement("div");
-      who.className = "who";
-      const plat = item.label ? item.label + " · " : "";
-      who.textContent = item.role === "bot" ? "她" : (plat + (item.name || item.uid || "对方"));
-      const txt = document.createElement("div");
-      txt.className = "txt";
-      txt.textContent = item.content;
-      const time = document.createElement("div");
-      time.className = "time";
-      time.textContent = fmtTime(item.created_at);
-      if (item.compressed) who.textContent = "摘要 · " + who.textContent;
-      const del = document.createElement("button");
-      del.className = "ghost";
-      del.textContent = "删";
-      del.addEventListener("click", async () => {
-        try {
-          await call("message/delete", { id: item.id });
-          loadChat();
-          loadStatus();
-        } catch (error) { toast("删除失败：" + error.message, true); }
-      });
-      row.appendChild(who); row.appendChild(txt); row.appendChild(time); row.appendChild(del);
-      box.appendChild(row);
-    });
-  } catch (error) {
-    box.textContent = "读取失败：" + error.message;
-  }
-}
+document.getElementById("btnRelReload").addEventListener("click", loadRelations);
 
 document.getElementById("btnChatReload").addEventListener("click", loadChat);
 document.getElementById("btnChatClear").addEventListener("click", async () => {
