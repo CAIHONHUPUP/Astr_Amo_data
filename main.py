@@ -59,7 +59,7 @@ except ImportError:  # 单文件加载时的兜底
             return ""
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.5.0"
+PLUGIN_VERSION = "2.3.1"
 DEFAULT_BOT_ID = "default"
 
 
@@ -210,6 +210,15 @@ class MemoryAPI:
             return self._store.list_messages(self._bot(bot_id), umo, limit, uid=uid)
         except Exception as exc:
             logger.debug("[amo_data] 读聊天记录失败: %s" % exc)
+            return []
+
+    async def messages_since(self, bot_id: str, uid: str, since_ts: int = 0,
+                             limit: int = 200) -> list:
+        """增量聊天（里程碑归档用）：某个 uid 在 since_ts 之后的消息。"""
+        try:
+            return self._store.messages_since(self._bot(bot_id), uid, since_ts, limit)
+        except Exception as exc:
+            logger.debug("[amo_data] 读增量聊天失败: %s" % exc)
             return []
 
     async def recall_messages(self, bot_id: str, query: str = "", umo: str = "",
@@ -742,8 +751,6 @@ class AmoDataPlugin(Star):
                     names[key] = str(row.get("name") or row.get("alias") or "")
         except Exception:
             names = {}
-        # 陪伴自己也是关系网节点，但它在数据侧没有画像；面板上显示成「她」
-        names.setdefault("bot", "她")
         for item in items:
             for side in ("a", "b"):
                 key = str(item.get(side + "_uid") or "")

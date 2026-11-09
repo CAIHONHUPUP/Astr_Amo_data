@@ -1710,6 +1710,26 @@ class DataStore:
             self.conn.commit()
             return int(cur.lastrowid or 0)
 
+    def messages_since(self, bot_id: str, uid: str, since_ts: int = 0,
+                       limit: int = 200) -> List[Dict[str, Any]]:
+        """取某个 uid 在 since_ts 之后说过/收到的消息（按时间正序）。
+
+        给陪伴插件的「每 N 轮里程碑归档」用：只按 uid，跨平台；
+        时间戳相同再按 id 排，保证顺序稳定。
+        """
+        where, params = _bot_filter(bot_id)
+        sql = ("SELECT id, umo, uid, name, role, content, created_at, platform, pid "
+               "FROM messages WHERE 1=1" + where + " AND uid=?")
+        params.append(str(uid))
+        if since_ts:
+            sql += " AND created_at>?"
+            params.append(int(since_ts))
+        sql += " ORDER BY created_at ASC, id ASC LIMIT ?"
+        params.append(max(1, min(int(limit), 2000)))
+        with self.lock:
+            rows = self.conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
     def list_messages(self, bot_id: str, umo: str = "", limit: int = 200,
                       pid: int = 0, platform: str = "", uid: str = "") -> List[Dict[str, Any]]:
         where, params = _bot_filter(bot_id)
