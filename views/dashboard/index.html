@@ -960,6 +960,44 @@ async function loadRelations() {
 
 document.getElementById("btnRelReload").addEventListener("click", loadRelations);
 
+async function loadChat() {
+  const box = document.getElementById("chatList");
+  box.textContent = "读取中…";
+  try {
+    const umo = (document.getElementById("chatUmo").value || "").trim();
+    const data = objectFrom(await call("messages", { umo, limit: 100 })) || {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    box.textContent = "";
+    if (!items.length) { box.innerHTML = '<div class="empty">还没有聊天记录。</div>'; return; }
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "msg";
+      const who = document.createElement("div");
+      who.className = "who";
+      who.textContent = (item.role === "bot" ? "她" : "他") + (item.platform ? " · " + item.platform : "");
+      const txt = document.createElement("div");
+      txt.className = "txt";
+      txt.textContent = item.content || "";
+      const time = document.createElement("div");
+      time.className = "time";
+      time.textContent = fmtTime(item.created_at);
+      const del = document.createElement("button");
+      del.className = "ghost";
+      del.textContent = "删";
+      del.addEventListener("click", async () => {
+        try {
+          await call("message/delete", { id: item.id });
+          loadChat();
+        } catch (error) { toast("删除失败：" + error.message, true); }
+      });
+      row.appendChild(who); row.appendChild(txt); row.appendChild(time); row.appendChild(del);
+      box.appendChild(row);
+    });
+  } catch (error) {
+    box.textContent = "读取失败：" + error.message;
+  }
+}
+
 document.getElementById("btnChatReload").addEventListener("click", loadChat);
 document.getElementById("btnChatClear").addEventListener("click", async () => {
   const umo = (document.getElementById("chatUmo").value || "").trim();
