@@ -48,7 +48,7 @@ except ImportError:  # 单文件加载时的兜底
     from store import DataStore  # type: ignore
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.3.0"
+PLUGIN_VERSION = "2.3.2"
 DEFAULT_BOT_ID = "default"
 
 
@@ -611,6 +611,8 @@ class AmoDataPlugin(Star):
                     names[key] = str(row.get("name") or row.get("alias") or "")
         except Exception:
             names = {}
+        # 陪伴自己也是关系网节点，但它在数据侧没有画像；面板上显示成「她」
+        names.setdefault("bot", "她")
         for item in items:
             for side in ("a", "b"):
                 key = str(item.get(side + "_uid") or "")
