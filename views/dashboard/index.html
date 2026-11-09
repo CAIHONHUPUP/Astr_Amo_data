@@ -762,11 +762,12 @@ function relColor(relation) {
     }
   }
 
-  function normalizeGraph(graph) {
+  function normalizeGraph(graph, radius) {
     let maxR = 0;
     graph.nodes.forEach((node) => { maxR = Math.max(maxR, Math.hypot(node.x, node.y, node.z)); });
     if (maxR > 0.01) {
-      const scale = 120 / maxR;
+      const target = Math.max(40, Number(radius) || 120);
+      const scale = target / maxR;
       graph.nodes.forEach((node) => { node.x *= scale; node.y *= scale; node.z *= scale; });
     }
   }
@@ -875,7 +876,7 @@ function relColor(relation) {
     // 节点多的时候少跑几轮，打开面板别卡住
     const iterations = graph.nodes.length > 400 ? 40 : (graph.nodes.length > 220 ? 90 : 180);
     settleGraph(graph, iterations);
-    normalizeGraph(graph);
+    normalizeGraph(graph, Math.min(canvas.clientWidth || 560, canvas.clientHeight || 340) * 0.34);
 
     if (legend) {
       const kinds = [...new Set(graph.links.map((link) => link.relation))];
