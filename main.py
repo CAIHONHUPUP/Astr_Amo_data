@@ -212,6 +212,51 @@ class MemoryAPI:
             logger.debug("[amo_data] 读聊天记录失败: %s" % exc)
             return []
 
+    def _backup_dir(self) -> str:
+        return os.path.join(os.path.dirname(getattr(self._store, "path", "") or "."), "backups")
+
+    async def export_snapshot(self, bot_id: str = "") -> dict:
+        """导出画像 / 记忆 / 关系 / 人物 / 身份别名（不传 bot_id 就导出全部）。"""
+        try:
+            return self._store.export_snapshot(self._bot(bot_id) if bot_id else "")
+        except Exception as exc:
+            logger.debug("[amo_data] 导出快照失败: %s" % exc)
+            return {}
+
+    async def import_snapshot(self, data: dict) -> dict:
+        """合并导入快照（记忆按内容去重，重复导入不会翻倍）。"""
+        try:
+            return self._store.import_snapshot(data or {})
+        except Exception as exc:
+            logger.debug("[amo_data] 导入快照失败: %s" % exc)
+            return {"error": 1}
+
+    async def backup_now(self, keep: int = 7) -> str:
+        try:
+            return self._store.backup_database(self._backup_dir(), keep)
+        except Exception as exc:
+            logger.debug("[amo_data] 数据库备份失败: %s" % exc)
+            return ""
+
+    async def list_backups(self) -> list:
+        try:
+            return self._store.list_backups(self._backup_dir())
+        except Exception:
+            return []
+
+    async def restore_backup(self, name: str, bot_id: str = "") -> dict:
+        """从 backups/ 里的某个 .db 恢复（合并语义，不覆盖现有数据）。"""
+        safe = os.path.basename(str(name or ""))
+        path = os.path.join(self._backup_dir(), safe)
+        try:
+            snapshot = self._store.load_snapshot_file(path, self._bot(bot_id) if bot_id else "")
+            if not snapshot:
+                return {"error": 1}
+            return self._store.import_snapshot(snapshot)
+        except Exception as exc:
+            logger.debug("[amo_data] 恢复备份失败: %s" % exc)
+            return {"error": 1}
+
     async def messages_since(self, bot_id: str, uid: str, since_ts: int = 0,
                              limit: int = 200) -> list:
         """增量聊天（里程碑归档用）：某个 uid 在 since_ts 之后的消息。"""
@@ -379,6 +424,27 @@ class AmoDataPlugin(Star):
             self._loop_task = None
         logger.info("[amo_data] 我想永远记住你 %s 已加载（%s）" % (PLUGIN_VERSION, self.db_path))
 
+    async def _maybe_daily_backup(self, bot_id: str) -> str:
+        """每天自动备份一次数据库，保留 backup_keep 份。"""
+        if not self._cfg_bool("backup_daily", True):
+            return ""
+        import datetime as _dt
+        day = _dt.date.today().strftime("%Y-%m-%d")
+        key = "backup_day:" + day
+        try:
+            if self.store.cache_get(bot_id, key):
+                return ""
+        except Exception:
+            pass
+        path = await self.mem.backup_now(int(self._cfg_int("backup_keep", 7)))
+        try:
+            self.store.cache_set(bot_id, key, "1", ttl=2 * 86400)
+        except Exception:
+            pass
+        if path:
+            logger.info("[amo_data] 每日备份: %s" % os.path.basename(path))
+        return path
+
     async def _maybe_weekly_cleanup(self, bot_id: str) -> dict:
         """每周只跑一次：合并同天摘要、近重复去重、归档低价值老记忆。"""
         import datetime as _dt
@@ -524,6 +590,11 @@ class AmoDataPlugin(Star):
             ("/relations", self.api_relations),
             ("/relation/save", self.api_relation_save),
             ("/relation/delete", self.api_relation_delete),
+            ("/backup/now", self.api_backup_now),
+            ("/backup/list", self.api_backup_list),
+            ("/backup/export", self.api_backup_export),
+            ("/backup/import", self.api_backup_import),
+            ("/backup/restore", self.api_backup_restore),
             ("/messages", self.api_messages),
             ("/message/delete", self.api_message_delete),
             ("/message/clear", self.api_message_clear),
@@ -737,6 +808,39 @@ class AmoDataPlugin(Star):
             return {"code": 1, "msg": "缺少 id"}
         return {"code": 0, "data": {"deleted": self.store.delete_memory(bot_id, memory_id)}}
 
+    async def api_backup_now(self):
+        payload = await self._body()
+        keep = payload.get("keep", self._cfg_int("backup_keep", 7))
+        path = await self.mem.backup_now(int(keep))
+        if not path:
+            return {"code": 1, "msg": "备份失败"}
+        return {"code": 0, "data": {"path": path, "name": os.path.basename(path),
+                                   "items": await self.mem.list_backups()}}
+
+    async def api_backup_list(self):
+        return {"code": 0, "data": {"items": await self.mem.list_backups()}}
+
+    async def api_backup_export(self):
+        payload = await self._body()
+        snapshot = await self.mem.export_snapshot(payload.get("bot_id") or "")
+        return {"code": 0, "data": {"snapshot": snapshot}}
+
+    async def api_backup_import(self):
+        payload = await self._body()
+        snapshot = payload.get("snapshot") if isinstance(payload, dict) else None
+        if not isinstance(snapshot, dict):
+            return {"code": 1, "msg": "缺少 snapshot"}
+        counts = await self.mem.import_snapshot(snapshot)
+        return {"code": 0, "data": counts}
+
+    async def api_backup_restore(self):
+        payload = await self._body()
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            return {"code": 1, "msg": "缺少备份文件名"}
+        counts = await self.mem.restore_backup(name, payload.get("bot_id") or "")
+        return {"code": 0, "data": counts}
+
     async def api_relations(self):
         payload = await self._body()
         bot_id = self._bot_id(payload)
@@ -913,6 +1017,10 @@ class AmoDataPlugin(Star):
                     await self._maybe_weekly_cleanup(bot_id)
                 except Exception as exc:
                     logger.debug("[amo_data] 每周记忆整理失败: %s" % exc)
+                try:
+                    await self._maybe_daily_backup(bot_id)
+                except Exception as exc:
+                    logger.debug("[amo_data] 每日备份失败: %s" % exc)
                 try:
                     if self.store.setting("embedding_enabled"):
                         self.store.backfill_embeddings(

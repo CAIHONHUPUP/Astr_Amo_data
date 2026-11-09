@@ -2197,6 +2197,204 @@ class DataStore:
                     continue
         return sorted(ids)
 
+    # ---------- 备份 / 导出 / 导入 ----------
+    _EXPORT_TABLES = ("memories", "profiles", "relations", "persons",
+                      "person_links", "identity_alias")
+
+    def _snapshot_from_conn(self, conn, bot_id: str = "") -> Dict[str, Any]:
+        where, params = _bot_filter(bot_id)
+        out: Dict[str, Any] = {
+            "format": "astr_amo_data", "version": 1,
+            "exported_at": _now(), "bot_id": str(bot_id or ""),
+        }
+        for table in self._EXPORT_TABLES:
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM %s WHERE 1=1%s" % (table, where), params
+                ).fetchall()
+            except Exception:
+                rows = []
+            out[table] = [dict(row) for row in rows]
+        return out
+
+    def export_snapshot(self, bot_id: str = "") -> Dict[str, Any]:
+        """导出画像 / 记忆 / 关系 / 人物 / 身份别名（不含聊天记录）。"""
+        with self.lock:
+            snapshot = self._snapshot_from_conn(self.conn, bot_id)
+        snapshot["counts"] = {k: len(snapshot[k]) for k in self._EXPORT_TABLES}
+        return snapshot
+
+    def load_snapshot_file(self, db_path: str, bot_id: str = "") -> Dict[str, Any]:
+        """从一个备份数据库文件导出同样的快照。"""
+        path = str(db_path)
+        if not os.path.isfile(path):
+            return {}
+        conn = sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"), uri=True)
+        try:
+            conn.row_factory = sqlite3.Row
+            snapshot = self._snapshot_from_conn(conn, bot_id)
+        finally:
+            conn.close()
+        snapshot["counts"] = {k: len(snapshot.get(k) or []) for k in self._EXPORT_TABLES}
+        return snapshot
+
+    def import_snapshot(self, data: Dict[str, Any]) -> Dict[str, int]:
+        """把快照合并进当前库：记忆/画像/关系按内容去重，人物按身份别名合并。"""
+        if not isinstance(data, dict):
+            return {"memories": 0, "profiles": 0, "relations": 0, "links": 0, "aliases": 0}
+        counts = {"memories": 0, "profiles": 0, "relations": 0, "links": 0,
+                  "aliases": 0, "skipped": 0}
+        default_bot = str(data.get("bot_id") or "") or ""
+        for item in data.get("memories") or []:
+            try:
+                bot = str(item.get("bot_id") or default_bot)
+                uid = str(item.get("uid") or "")
+                content = str(item.get("content") or "")
+                if not bot or not uid or not content:
+                    continue
+                res = self.remember(
+                    bot, uid, content,
+                    kind=str(item.get("kind") or "fact"),
+                    importance=item.get("importance", 0.5),
+                    scope=str(item.get("scope") or "private"),
+                    group_id=str(item.get("group_id") or ""),
+                    idem_key=str(item.get("idem_key") or ""),
+                    created_at=item.get("created_at"),
+                    last_hit_at=item.get("last_hit_at"),
+                    hit_count=item.get("hit_count", 0),
+                )
+                if not res.get("ok"):
+                    continue
+                if res.get("duplicate"):
+                    # 已经存在（内容指纹相同）就跳过，重复导入不会算成新增
+                    counts["skipped"] += 1
+                    continue
+                counts["memories"] += 1
+                mid = int(res.get("memory_id") or 0)
+                status = str(item.get("status") or "")
+                if mid and status in ("superseded", "archived", "merged"):
+                    with self.lock:
+                        self.conn.execute(
+                            "UPDATE memories SET status=?, superseded_by=? WHERE id=?",
+                            (status, int(item.get("superseded_by") or 0), mid),
+                        )
+                        self.conn.commit()
+            except Exception:
+                continue
+        for item in data.get("profiles") or []:
+            try:
+                bot = str(item.get("bot_id") or default_bot)
+                uid = str(item.get("uid") or "")
+                if not bot or not uid:
+                    continue
+                current = self.get_profile(bot, uid)
+                try:
+                    remote_at = int(item.get("updated_at") or 0)
+                except (TypeError, ValueError):
+                    remote_at = 0
+                if current and remote_at and remote_at < int(current.get("updated_at") or 0):
+                    continue
+                self.save_profile(
+                    bot, uid,
+                    name=item.get("name"), alias=item.get("alias"),
+                    relation=item.get("relation"), remark=item.get("remark"),
+                )
+                counts["profiles"] += 1
+            except Exception:
+                continue
+        for item in data.get("relations") or []:
+            try:
+                if self.save_relation(
+                    str(item.get("bot_id") or default_bot),
+                    str(item.get("a_uid") or ""), str(item.get("b_uid") or ""),
+                    str(item.get("relation") or "朋友"), str(item.get("note") or ""),
+                ):
+                    counts["relations"] += 1
+            except Exception:
+                continue
+        for item in data.get("person_links") or []:
+            try:
+                bot = str(item.get("bot_id") or default_bot)
+                platform, uid = str(item.get("platform") or ""), str(item.get("uid") or "")
+                if not bot or not uid:
+                    continue
+                self.resolve_person(bot, platform, uid, str(item.get("name") or ""))
+                counts["links"] += 1
+            except Exception:
+                continue
+        for item in data.get("identity_alias") or []:
+            try:
+                if self.set_identity_alias(
+                    str(item.get("bot_id") or default_bot),
+                    str(item.get("platform") or ""), str(item.get("uid") or ""),
+                    str(item.get("alias_platform") or ""), str(item.get("alias_uid") or ""),
+                ):
+                    counts["aliases"] += 1
+            except Exception:
+                continue
+        return counts
+
+    def backup_database(self, dest_dir: str, keep: int = 7) -> str:
+        """把当前 SQLite 拷贝一份到 dest_dir，并只保留最近 keep 份。"""
+        dest_dir = str(dest_dir)
+        os.makedirs(dest_dir, exist_ok=True)
+        name = "amo_data-%s.db" % datetime.now().strftime("%Y%m%d-%H%M%S")
+        dest = os.path.join(dest_dir, name)
+        with self.lock:
+            target = sqlite3.connect(dest)
+            try:
+                self.conn.backup(target)
+            finally:
+                target.close()
+        self.prune_backups(dest_dir, keep)
+        return dest
+
+    def prune_backups(self, dest_dir: str, keep: int = 7) -> int:
+        try:
+            keep = max(1, int(keep))
+        except (TypeError, ValueError):
+            keep = 7
+        try:
+            names = [n for n in os.listdir(dest_dir)
+                     if n.startswith("amo_data-") and n.endswith(".db")]
+        except Exception:
+            return 0
+        files = []
+        for name in names:
+            path = os.path.join(dest_dir, name)
+            try:
+                files.append((os.path.getmtime(path), path))
+            except Exception:
+                continue
+        files.sort(reverse=True)
+        removed = 0
+        for _, path in files[keep:]:
+            try:
+                os.remove(path)
+                removed += 1
+            except Exception:
+                continue
+        return removed
+
+    def list_backups(self, dest_dir: str) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        try:
+            names = os.listdir(dest_dir)
+        except Exception:
+            return out
+        for name in names:
+            if not (name.startswith("amo_data-") and name.endswith(".db")):
+                continue
+            path = os.path.join(dest_dir, name)
+            try:
+                st = os.stat(path)
+            except Exception:
+                continue
+            out.append({"name": name, "size": int(st.st_size),
+                        "mtime": int(st.st_mtime)})
+        out.sort(key=lambda item: item["name"], reverse=True)
+        return out
+
     def stats(self, bot_id: str = "") -> Dict[str, int]:
         where, params = _bot_filter(bot_id)
         with self.lock:

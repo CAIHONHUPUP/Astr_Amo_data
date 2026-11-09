@@ -121,5 +121,16 @@
     "description": "每次补向量的条数",
     "hint": "启动时和每小时维护各补一批，旧记忆会慢慢补全，不阻塞聊天。",
     "default": 200
+  },
+  "backup_daily": {
+    "type": "bool",
+    "description": "每天自动备份数据库",
+    "default": true,
+    "hint": "每天备份一次 amo_data.db 到 plugin_data/Astr_Amo_data/backups/，保留最近 N 份。"
+  },
+  "backup_keep": {
+    "type": "int",
+    "description": "备份保留份数",
+    "default": 7
   }
 }

@@ -56,6 +56,7 @@
   <button data-tab="chat">聊天</button>
   <button data-tab="schedule">日程</button>
   <button data-tab="logs">日志</button>
+  <button data-tab="backup">备份</button>
 </nav>
 
 <main>
@@ -65,26 +66,30 @@
         <input class="grow" id="search" placeholder="搜 uid / 称呼 / 备注">
         <button class="ghost" id="btnReload">刷新</button>
       </div>
-      <div class="hint">点一条查看画像。修改请到陪伴面板；这里只读，避免两边各改一份。</div>
+      <div class="hint">点一条进入编辑：改名字、称呼、关系，保存后立即写回库。</div>
     </div>
     <div class="list" id="profileList"></div>
 
     <div class="card" id="editor" hidden>
       <div class="row">
-        <strong class="grow" id="editorTitle">人物画像（只读）</strong>
+        <strong class="grow" id="editorTitle">编辑画像</strong>
         <button class="ghost" id="btnCloseEditor">关闭</button>
       </div>
       <label>UID</label>
       <input id="fUid" readonly>
       <label>名字</label>
-      <input id="fName" readonly>
+      <input id="fName" placeholder="她平时怎么叫他">
       <label>别名（逗号分隔）</label>
-      <input id="fAlias" readonly>
+      <input id="fAlias" placeholder="老公,哥哥">
       <label>关系</label>
-      <input id="fRelation" readonly>
+      <input id="fRelation" placeholder="相恋 / 熟识 / 普通 / 抵触 / 仇恨">
       <label>备注</label>
-      <textarea id="fRemark" readonly></textarea>
-      <div class="hint">画像由陪伴面板维护，这里只读；要改名字/关系请回陪伴面板。</div>
+      <textarea id="fRemark" placeholder="特征、偏好、要注意的事"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="btnSaveProfile">保存</button>
+        <button class="ghost danger" id="btnDeleteProfile">删除这个人的全部数据</button>
+      </div>
+      <div class="hint">删除会连带清掉他的记忆、关系边和缓存，不可恢复。</div>
     </div>
 
     <div class="card" id="memories" hidden>
@@ -177,6 +182,20 @@
       </div>
       <textarea id="schedBody" rows="14" readonly></textarea>
     </div>
+  </section>
+
+  <section class="panel" id="panel-backup">
+    <div class="card">
+      <div class="row">
+        <strong class="grow">记忆备份</strong>
+        <button id="btnBackupNow">立即备份</button>
+        <button class="ghost" id="btnBackupExport">导出 JSON</button>
+        <button class="ghost" id="btnBackupImport">导入 JSON</button>
+        <input type="file" id="backupFile" accept=".json,application/json" hidden>
+      </div>
+      <div class="hint">每天自动备份一次，保留最近 7 份，放在 plugin_data/Astr_Amo_data/backups/；恢复是合并语义，不会删现有记忆。</div>
+    </div>
+    <div class="card"><div id="backupList" class="list"></div></div>
   </section>
 
   <section class="panel" id="panel-logs">
@@ -308,12 +327,7 @@ async function bridgeCall(action, payload) {
     const attempt = payload && typeof b.apiPost === "function"
       ? b.apiPost(action, payload)
       : b.apiGet(action, payload || {});
-    // 页面桥接有时会一直不回应（比如宿主没实现 api:get）：
-    // 最多等 2 秒就回落到 HTTP，避免整个面板卡在「读取中…」。
-    let result = await Promise.race([
-      attempt,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("插件桥接超时（回落到 HTTP）")), 2000)),
-    ]);
+    let result = await attempt;
     if (result && typeof result.json === "function") result = await result.json();
     if (typeof result === "string") {
       try { result = JSON.parse(result); } catch (error) {}
@@ -394,6 +408,7 @@ document.querySelectorAll("nav button").forEach((btn) => {
     if (tab === "chat") loadChat();
     if (tab === "schedule") loadSchedule();
     if (tab === "logs") loadLogs();
+    if (tab === "backup") loadBackups();
   });
 });
 
@@ -448,7 +463,7 @@ async function openProfile(uid) {
     const p = data.profile || {};
     currentBot = data.bot_id || "";
     document.getElementById("editor").hidden = false;
-    document.getElementById("editorTitle").textContent = "人物画像（只读）· " + (p.name || uid);
+    document.getElementById("editorTitle").textContent = "编辑画像 · " + (p.name || uid);
     document.getElementById("fUid").value = uid;
     document.getElementById("fName").value = p.name || "";
     document.getElementById("fAlias").value = p.alias || "";
@@ -490,6 +505,36 @@ function renderMemories(items) {
     box.appendChild(row);
   });
 }
+
+document.getElementById("btnSaveProfile").addEventListener("click", async () => {
+  try {
+    await call("profile/save", {
+      uid: currentUid,
+      bot_id: currentBot,
+      name: document.getElementById("fName").value,
+      alias: document.getElementById("fAlias").value,
+      relation: document.getElementById("fRelation").value,
+      remark: document.getElementById("fRemark").value,
+    });
+    toast("已保存");
+    loadProfiles();
+    loadStatus();
+  } catch (error) { toast("保存失败：" + error.message, true); }
+});
+
+document.getElementById("btnDeleteProfile").addEventListener("click", async () => {
+  if (!currentUid) return;
+  if (!window.confirm("删除 " + currentUid + " 的画像、记忆、关系边？不可恢复。")) return;
+  try {
+    await call("profile/delete", { uid: currentUid, bot_id: currentBot, confirm: 1 });
+    toast("已删除");
+    document.getElementById("editor").hidden = true;
+    document.getElementById("memories").hidden = true;
+    currentUid = "";
+    loadProfiles();
+    loadStatus();
+  } catch (error) { toast("删除失败：" + error.message, true); }
+});
 
 document.getElementById("btnCloseEditor").addEventListener("click", () => {
   document.getElementById("editor").hidden = true;
@@ -653,297 +698,151 @@ const REL_COLORS = {
   同学: "#c9a24d", 熟人: "#9b8fd0", 陌生人: "#9aa0a6", 仇人: "#c0504d",
 };
 let graphState = null;
-let __graphHover = "";
-let graphRaf = 0;
-const graphCamera = { yaw: 0.35, pitch: -0.2, distance: 0, auto: true };
 
 function relColor(relation) {
   return REL_COLORS[relation] || "#9aa0a6";
 }
 
-  const REL_RANK = { 家人: 5, 恋人: 6, 朋友: 4, 同事: 3, 同学: 3, 熟人: 2, 陌生人: 1, 仇人: 4 };
+function buildGraph(items) {
+  const nodes = new Map();
+  const edges = [];
+  items.forEach((edge) => {
+    const a = String(edge.a_uid || "");
+    const b = String(edge.b_uid || "");
+    if (!a || !b) return;
+    if (!nodes.has(a)) nodes.set(a, { id: a, name: edge.a_name || a, x: 0, y: 0, vx: 0, vy: 0 });
+    if (!nodes.has(b)) nodes.set(b, { id: b, name: edge.b_name || b, x: 0, y: 0, vx: 0, vy: 0 });
+    edges.push({ a, b, relation: edge.relation || "朋友" });
+  });
+  const list = [...nodes.values()];
+  const radius = Math.min(160, 40 + list.length * 6);
+  list.forEach((node, index) => {
+    const angle = (index / Math.max(1, list.length)) * Math.PI * 2;
+    node.x = Math.cos(angle) * radius;
+    node.y = Math.sin(angle) * radius;
+  });
+  return { nodes: list, edges, index: nodes };
+}
 
-  function buildGraph(edges) {
-    const nodes = new Map();
-    const links = [];
-    edges.forEach((edge) => {
-      const a = String(edge.a_uid || "");
-      const b = String(edge.b_uid || "");
-      if (!a || !b) return;
-      if (!nodes.has(a)) nodes.set(a, { id: a, name: edge.a_name || a, relation: "", degree: 0 });
-      if (!nodes.has(b)) nodes.set(b, { id: b, name: edge.b_name || b, relation: "", degree: 0 });
-      const relation = edge.relation || "朋友";
-      links.push({ a, b, relation });
-      const rank = REL_RANK[relation] || 3;
-      [a, b].forEach((id) => {
-        const node = nodes.get(id);
-        node.degree += 1;
-        if (rank > (REL_RANK[node.relation] || 0)) node.relation = relation;
-      });
-    });
-    // 球面均匀撒点，再跑 3D 力导向，先长成“一团脑子”的基础形状
-    const list = [...nodes.values()];
-    const golden = Math.PI * (3 - Math.sqrt(5));
-    const shell = 70 + Math.min(110, list.length * 1.1);
-    list.forEach((node, i) => {
-      const y = 1 - (i / Math.max(1, list.length - 1)) * 2;
-      const ring = Math.sqrt(Math.max(0, 1 - y * y));
-      const theta = golden * i;
-      node.x = Math.cos(theta) * ring * shell;
-      node.y = y * shell;
-      node.z = Math.sin(theta) * ring * shell;
-      node.vx = 0; node.vy = 0; node.vz = 0;
-    });
-    return { nodes: list, links, index: nodes, radius: shell };
-  }
-
-  function settleGraph(graph, iterations) {
-    const nodes = graph.nodes;
-    const n = nodes.length;
-    for (let step = 0; step < iterations; step += 1) {
-      for (let i = 0; i < n; i += 1) {
-        const a = nodes[i];
-        for (let j = i + 1; j < n; j += 1) {
-          const b = nodes[j];
-          let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
-          const dist2 = dx * dx + dy * dy + dz * dz || 0.01;
-          const dist = Math.sqrt(dist2);
-          const force = Math.min(700, 900 / dist2);
-          dx /= dist; dy /= dist; dz /= dist;
-          a.vx += dx * force; a.vy += dy * force; a.vz += dz * force;
-          b.vx -= dx * force; b.vy -= dy * force; b.vz -= dz * force;
-        }
-      }
-      graph.links.forEach((link) => {
-        const a = graph.index.get(link.a), b = graph.index.get(link.b);
-        if (!a || !b) return;
-        let dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
-        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.01;
-        const force = (dist - 52) * 0.05;
-        dx /= dist; dy /= dist; dz /= dist;
-        a.vx += dx * force; a.vy += dy * force; a.vz += dz * force;
-        b.vx -= dx * force; b.vy -= dy * force; b.vz -= dz * force;
-      });
-      for (let i = 0; i < n; i += 1) {
-        const node = nodes[i];
-        node.vx -= node.x * 0.02; node.vy -= node.y * 0.02; node.vz -= node.z * 0.02;
-        node.vx *= 0.5; node.vy *= 0.5; node.vz *= 0.5;
-        node.x += node.vx; node.y += node.vy; node.z += node.vz;
-      }
+function stepGraph(graph, width, height) {
+  const centerX = width / 2, centerY = height / 2;
+  const nodes = graph.nodes;
+  for (let i = 0; i < nodes.length; i += 1) {
+    const a = nodes[i];
+    for (let j = i + 1; j < nodes.length; j += 1) {
+      const b = nodes[j];
+      let dx = a.x - b.x, dy = a.y - b.y;
+      let dist = Math.hypot(dx, dy) || 0.01;
+      const force = Math.min(1600, 9000 / (dist * dist));
+      const fx = (dx / dist) * force, fy = (dy / dist) * force;
+      a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
     }
+    // 往中心收一点，避免飞出去
+    a.vx += (centerX - a.x) * 0.012;
+    a.vy += (centerY - a.y) * 0.012;
   }
+  graph.edges.forEach((edge) => {
+    const a = graph.index.get(edge.a), b = graph.index.get(edge.b);
+    if (!a || !b) return;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy) || 0.01;
+    const force = (dist - 90) * 0.02;
+    const fx = (dx / dist) * force, fy = (dy / dist) * force;
+    a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+  });
+  nodes.forEach((node) => {
+    if (node.dragging) return;
+    node.vx *= 0.82; node.vy *= 0.82;
+    node.x += node.vx; node.y += node.vy;
+    node.x = Math.max(24, Math.min(width - 24, node.x));
+    node.y = Math.max(24, Math.min(height - 24, node.y));
+  });
+}
 
-  function normalizeGraph(graph, radius) {
-    let maxR = 0;
-    graph.nodes.forEach((node) => { maxR = Math.max(maxR, Math.hypot(node.x, node.y, node.z)); });
-    if (maxR > 0.01) {
-      const target = Math.max(40, Number(radius) || 120);
-      const scale = target / maxR;
-      graph.nodes.forEach((node) => { node.x *= scale; node.y *= scale; node.z *= scale; });
-    }
-  }
-
-  function projectGraph(graph, camera, width, height) {
-    const cosY = Math.cos(camera.yaw), sinY = Math.sin(camera.yaw);
-    const cosP = Math.cos(camera.pitch), sinP = Math.sin(camera.pitch);
-    const focus = 760;
-    const center = focus + camera.distance;
-    graph.nodes.forEach((node) => {
-      const x1 = node.x * cosY - node.z * sinY;
-      const z1 = node.x * sinY + node.z * cosY;
-      const y1 = node.y * cosP - z1 * sinP;
-      const z2 = node.y * sinP + z1 * cosP;
-      const t = focus / Math.max(180, center + z2);
-      node.px = width / 2 + x1 * t;
-      node.py = height / 2 + y1 * t;
-      node.pscale = t;
-      node.pdepth = z2;
-    });
-  }
-
-  function drawGraph(ctx, graph, width, height, camera, hoverId) {
-    ctx.clearRect(0, 0, width, height);
-    const halo = ctx.createRadialGradient(width / 2, height / 2, 8, width / 2, height / 2, Math.max(width, height) * 0.55);
-    halo.addColorStop(0, "rgba(224,106,154,0.06)");
-    halo.addColorStop(1, "rgba(224,106,154,0)");
-    ctx.fillStyle = halo;
-    ctx.fillRect(0, 0, width, height);
-
-    projectGraph(graph, camera, width, height);
-    const activeId = hoverId || __graphActive;
-    const ordered = graph.nodes.slice().sort((a, b) => b.pdepth - a.pdepth);
-
-    // 远的线更淡，近的更亮，转起来才有深度
-    graph.links.forEach((link) => {
-      const a = graph.index.get(link.a), b = graph.index.get(link.b);
-      if (!a || !b) return;
-      const depth = (a.pdepth + b.pdepth) / 2;
-      const near = activeId && (link.a === activeId || link.b === activeId);
-      const base = 0.05 + 0.2 * (1 - Math.min(1, Math.max(0, (depth + 180) / 360)));
-      ctx.strokeStyle = relColor(link.relation);
-      ctx.globalAlpha = near ? 0.9 : base;
-      ctx.lineWidth = near ? 1.8 : 0.8;
-      ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
-    });
-    ctx.globalAlpha = 1;
-
-    // 节点带一点辉光，像神经元
-    ordered.forEach((node) => {
-      const active = node.id === activeId;
-      const scale = Math.max(0.45, node.pscale);
-      const radius = (active ? 9 : node.id === "bot" ? 7.5 : 5.5) * scale;
-      const color = node.id === "bot" ? "#e06a9a" : relColor(node.relation);
-      const glow = ctx.createRadialGradient(node.px, node.py, 0, node.px, node.py, radius * 3.4);
-      glow.addColorStop(0, color);
-      glow.addColorStop(0.35, color);
-      glow.addColorStop(1, "rgba(255,255,255,0)");
-      ctx.globalAlpha = active ? 0.6 : 0.32;
-      ctx.fillStyle = glow;
-      ctx.beginPath(); ctx.arc(node.px, node.py, radius * 3.4, 0, Math.PI * 2); ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.beginPath();
-      ctx.fillStyle = active ? "#e06a9a" : "#fff";
-      ctx.strokeStyle = color;
-      ctx.lineWidth = active ? 2.2 : 1.2;
-      ctx.arc(node.px, node.py, radius, 0, Math.PI * 2);
-      ctx.fill(); ctx.stroke();
-    });
-
-    // 标签只给关键的：bot、悬停的、以及关系最近/连接最多的十几个
-    const labelNodes = ordered.filter((node) => node.id === "bot" || node.id === activeId)
-      .concat(ordered.filter((node) => node.id !== "bot" && node.id !== activeId)
-        .sort((a, b) => (REL_RANK[b.relation] || 0) - (REL_RANK[a.relation] || 0) || b.degree - a.degree)
-        .slice(0, 12));
+function drawGraph(ctx, graph, width, height, activeId) {
+  ctx.clearRect(0, 0, width, height);
+  graph.edges.forEach((edge) => {
+    const a = graph.index.get(edge.a), b = graph.index.get(edge.b);
+    if (!a || !b) return;
+    ctx.strokeStyle = relColor(edge.relation);
+    ctx.globalAlpha = activeId && (edge.a === activeId || edge.b === activeId) ? 0.95 : 0.35;
+    ctx.lineWidth = activeId && (edge.a === activeId || edge.b === activeId) ? 2.2 : 1.2;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  });
+  ctx.globalAlpha = 1;
+  graph.nodes.forEach((node) => {
+    const active = node.id === activeId;
+    ctx.beginPath();
+    ctx.fillStyle = active ? "#e06a9a" : "#fff";
+    ctx.strokeStyle = active ? "#e06a9a" : "#c9b8d4";
+    ctx.lineWidth = active ? 2.5 : 1.5;
+    ctx.arc(node.x, node.y, active ? 9 : 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#4a3f52";
     ctx.font = "11px system-ui, sans-serif";
     ctx.textAlign = "center";
-    labelNodes.forEach((node) => {
-      const label = node.name.length > 8 ? node.name.slice(0, 8) + "…" : node.name;
-      ctx.globalAlpha = node.id === activeId || node.id === "bot" ? 1 : 0.72;
-      ctx.fillStyle = "#4a3f52";
-      ctx.fillText(label, node.px, node.py + 18 * Math.max(0.6, node.pscale));
-    });
-    ctx.globalAlpha = 1;
+    const label = node.name.length > 8 ? node.name.slice(0, 8) + "…" : node.name;
+    ctx.fillText(label, node.x, node.y + 20);
+  });
+}
+
+function renderGraph(items) {
+  const canvas = document.getElementById("relGraph");
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  const width = wrap.clientWidth - 24;
+  const height = 320;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const graph = buildGraph(items);
+  graphState = graph;
+  if (!graph.nodes.length) {
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "#9a8fa3";
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("还没有关系，先加一条或让陪伴自己记", width / 2, height / 2);
+    return;
   }
+  for (let i = 0; i < 220; i += 1) stepGraph(graph, width, height);
+  const activeId = window.__graphActive || "";
+  drawGraph(ctx, graph, width, height, activeId);
 
-  function renderGraph(edges) {
-    const canvas = document.getElementById("relGraph");
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    const graph = buildGraph(edges);
-    graphState = graph;
-    const legend = document.getElementById("relLegend");
-    if (!graph.nodes.length) {
-      if (graphRaf) { cancelAnimationFrame(graphRaf); graphRaf = 0; }
-      canvas.width = Math.max(1, canvas.clientWidth);
-      canvas.height = Math.max(1, canvas.clientHeight);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#9a8fa3";
-      ctx.font = "12px system-ui, sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText("还没有关系，先加一条或让陪伴自己记", canvas.clientWidth / 2, canvas.clientHeight / 2);
-      if (legend) legend.textContent = "";
-      return;
-    }
-    // 节点多的时候少跑几轮，打开面板别卡住
-    const iterations = graph.nodes.length > 400 ? 40 : (graph.nodes.length > 220 ? 90 : 180);
-    settleGraph(graph, iterations);
-    normalizeGraph(graph, Math.min(canvas.clientWidth || 560, canvas.clientHeight || 340) * 0.34);
+  const legend = document.getElementById("relLegend");
+  const kinds = [...new Set(graph.edges.map((edge) => edge.relation))];
+  legend.innerHTML = kinds.map((kind) =>
+    '<span style="display:inline-block;margin-right:10px"><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' +
+    relColor(kind) + ';margin-right:4px"></i>' + kind + "</span>").join("");
 
-    if (legend) {
-      const kinds = [...new Set(graph.links.map((link) => link.relation))];
-      legend.innerHTML = kinds.map((kind) =>
-        '<span style="display:inline-block;margin-right:10px"><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' +
-        relColor(kind) + ';margin-right:4px"></i>' + kind + "</span>").join("") +
-        '<span style="color:#9a8fa3">拖动旋转 · 滚轮缩放 · 双击回正</span>';
-    }
-
-    let width = 0, height = 0, dpr = 1;
-    const fit = () => {
-      const w = canvas.clientWidth || (canvas.parentElement.clientWidth - 28);
-      const h = canvas.clientHeight || 340;
-      dpr = window.devicePixelRatio || 1;
-      if (w !== width || h !== height) {
-        width = w; height = h;
-        canvas.width = Math.max(1, Math.round(w * dpr));
-        canvas.height = Math.max(1, Math.round(h * dpr));
-      }
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  canvas.onmousedown = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = event.clientX - rect.left, my = event.clientY - rect.top;
+    const hit = graph.nodes.find((node) => Math.hypot(node.x - mx, node.y - my) < 14);
+    if (!hit) return;
+    hit.dragging = true;
+    window.__graphActive = hit.id;
+    const move = (ev) => {
+      hit.x = Math.max(24, Math.min(width - 24, ev.clientX - rect.left));
+      hit.y = Math.max(24, Math.min(height - 24, ev.clientY - rect.top));
+      stepGraph(graph, width, height);
+      drawGraph(ctx, graph, width, height, hit.id);
     };
-
-    if (graphRaf) cancelAnimationFrame(graphRaf);
-    let lastDraw = 0;
-    const frame = (now) => {
-      if (!canvas.isConnected) return;
-      fit();
-      if (width <= 0) { graphRaf = requestAnimationFrame(frame); return; }
-      if (graphCamera.auto && !canvas.__brainDragging) graphCamera.yaw += 0.0016;
-      lastDraw = now || 0;
-      // 30fps 就够了，节点多的时候别把主线程拖死
-      if (!lastDraw || lastDraw - (canvas.__brainLast || 0) >= 32) {
-        canvas.__brainLast = lastDraw;
-        drawGraph(ctx, graph, width, height, graphCamera, __graphHover);
-      }
-      graphRaf = requestAnimationFrame(frame);
+    const up = () => {
+      hit.dragging = false;
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
     };
-
-    // 拖动 = 旋转整团神经网；滚轮缩放；双击回正
-    canvas.style.touchAction = "none";
-    canvas.style.cursor = "grab";
-    canvas.__brainDragging = false;
-    let lastX = 0, lastY = 0;
-    const pick = (event) => {
-      const rect = canvas.getBoundingClientRect();
-      const mx = (event.clientX - rect.left) * (width / Math.max(1, rect.width));
-      const my = (event.clientY - rect.top) * (height / Math.max(1, rect.height));
-      let best = null, bestDist = 20;
-      graph.nodes.forEach((node) => {
-        const dist = Math.hypot(node.px - mx, node.py - my);
-        if (dist < bestDist) { bestDist = dist; best = node; }
-      });
-      return best;
-    };
-    canvas.onpointerdown = (event) => {
-      event.preventDefault();
-      if (canvas.__brainIdle) clearTimeout(canvas.__brainIdle);
-      canvas.__brainDragging = true;
-      canvas.style.cursor = "grabbing";
-      graphCamera.auto = false;
-      lastX = event.clientX; lastY = event.clientY;
-      try { canvas.setPointerCapture(event.pointerId); } catch (err) {}
-    };
-    canvas.onpointermove = (event) => {
-      if (canvas.__brainDragging) {
-        graphCamera.yaw += (event.clientX - lastX) * 0.009;
-        graphCamera.pitch += (event.clientY - lastY) * 0.007;
-        graphCamera.pitch = Math.max(-1.25, Math.min(1.25, graphCamera.pitch));
-        lastX = event.clientX; lastY = event.clientY;
-        return;
-      }
-      const hit = pick(event);
-      __graphHover = hit ? hit.id : "";
-      canvas.style.cursor = hit ? "pointer" : "grab";
-    };
-    const endDrag = () => {
-      if (!canvas.__brainDragging) return;
-      canvas.__brainDragging = false;
-      canvas.style.cursor = "grab";
-      canvas.__brainIdle = setTimeout(() => { graphCamera.auto = true; }, 4000);
-    };
-    canvas.onpointerup = endDrag;
-    canvas.onpointercancel = endDrag;
-    canvas.onpointerleave = () => { __graphHover = ""; };
-    canvas.onwheel = (event) => {
-      event.preventDefault();
-      graphCamera.distance = Math.max(-220, Math.min(500, graphCamera.distance + event.deltaY * 0.4));
-    };
-    canvas.ondblclick = () => {
-      graphCamera.yaw = 0.35; graphCamera.pitch = -0.2; graphCamera.distance = 0;
-      graphCamera.auto = true;
-    };
-
-    frame();
-  }
-
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+}
 
 /* ---------- 关系网 ---------- */
 async function loadRelations() {
@@ -1068,6 +967,90 @@ document.getElementById("btnSchedClose").addEventListener("click", () => {
 });
 
 /* ---------- 日志 ---------- */
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
+  if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+  return n + " B";
+}
+
+async function loadBackups() {
+  const box = document.getElementById("backupList");
+  box.textContent = "读取中…";
+  try {
+    const data = objectFrom(await call("backup/list")) || {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    box.textContent = "";
+    if (!items.length) { box.innerHTML = '<div class="empty">还没有备份，点「立即备份」生成一份。</div>'; return; }
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "msg";
+      const who = document.createElement("div");
+      who.className = "who";
+      who.textContent = item.name;
+      const txt = document.createElement("div");
+      txt.className = "txt";
+      txt.textContent = fmtBytes(item.size) + " · " + fmtTime(item.mtime);
+      const btn = document.createElement("button");
+      btn.className = "ghost";
+      btn.textContent = "恢复";
+      btn.addEventListener("click", async () => {
+        if (!window.confirm("从这份备份合并恢复？现有记忆不会被删除。")) return;
+        try {
+          const res = await call("backup/restore", { name: item.name });
+          const counts = (res && res.data) || {};
+          toast("已恢复：记忆 " + (counts.memories || 0) + " · 画像 " + (counts.profiles || 0) + " · 关系 " + (counts.relations || 0));
+          loadBackups();
+        } catch (error) { toast("恢复失败：" + error.message, true); }
+      });
+      row.appendChild(who); row.appendChild(txt); row.appendChild(btn);
+      box.appendChild(row);
+    });
+  } catch (error) {
+    box.textContent = "读取失败：" + error.message;
+  }
+}
+
+document.getElementById("btnBackupNow").addEventListener("click", async () => {
+  try {
+    const res = await call("backup/now", {});
+    toast("已备份：" + ((res && res.data && res.data.name) || ""));
+    loadBackups();
+  } catch (error) { toast("备份失败：" + error.message, true); }
+});
+
+document.getElementById("btnBackupExport").addEventListener("click", async () => {
+  try {
+    const res = await call("backup/export", {});
+    const snapshot = (res && res.data && res.data.snapshot) || {};
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "");
+    a.href = url; a.download = "amo_data_memories_" + stamp + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast("已导出 JSON");
+  } catch (error) { toast("导出失败：" + error.message, true); }
+});
+
+document.getElementById("btnBackupImport").addEventListener("click", () => {
+  document.getElementById("backupFile").click();
+});
+document.getElementById("backupFile").addEventListener("change", async (event) => {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const snapshot = JSON.parse(text);
+    const res = await call("backup/import", { snapshot });
+    const counts = (res && res.data) || {};
+    toast("已导入：记忆 " + (counts.memories || 0) + " · 画像 " + (counts.profiles || 0) + " · 关系 " + (counts.relations || 0));
+    loadBackups();
+  } catch (error) { toast("导入失败：" + error.message, true); }
+  event.target.value = "";
+});
+
 async function loadLogs() {
   const box = document.getElementById("logList");
   box.textContent = "读取中…";
