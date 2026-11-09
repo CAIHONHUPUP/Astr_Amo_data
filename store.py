@@ -1451,6 +1451,14 @@ class DataStore:
         pool_size = int(pool_size if pool_size is not None
                         else self.setting("pool_size", RECALL_POOL) or RECALL_POOL)
 
+        # 解析查询里的时间词（昨天/前天/11月6号…），给对应日期的阶段记忆加权
+        span = None
+        try:
+            from time_query import parse_time_span
+            span = parse_time_span(text)
+        except Exception:
+            span = None
+
         # 自适应候选池：库小就全量精排，库大才截断（固定 400 会让老记忆永远进不了池）
         try:
             with self.lock:
@@ -1492,6 +1500,19 @@ class DataStore:
             ).fetchall()
         rows.extend([r for r in more if int(r["id"]) not in seen])
 
+        # 问"昨天/前天"时，把对应当天的日总结直接拉进候选池（否则它可能连候选都进不了）
+        if span:
+            try:
+                date_tag = "%04d-%02d-%02d" % (int(span["year"]), int(span["month"]), int(span["day"]))
+                with self.lock:
+                    digests = self.conn.execute(
+                        base + " AND kind='daily_digest' AND content LIKE ? LIMIT 3",
+                        params + ["%" + date_tag + "%"],
+                    ).fetchall()
+                seen = {int(r["id"]) for r in rows}
+                rows.extend([r for r in digests if int(r["id"]) not in seen])
+            except Exception:
+                pass
         if not rows:
             return []
 
@@ -1541,7 +1562,15 @@ class DataStore:
                 covered = len(infos & doc_set) / float(info_count)
                 rel = 0.65 * rel + 0.35 * covered
             cos = coss.get(int(row["id"]), 0.0) if q_vec else 0.0
-            if text and not (rel > 0 or cos > 0):
+            # 问"昨天"时，对应当天的日总结即使没有任何关键词命中也要保留
+            date_hit = False
+            if span and str(row["kind"] or "") == "daily_digest":
+                try:
+                    date_hit = ("%04d-%02d-%02d" % (int(span["year"]), int(span["month"]), int(span["day"]))
+                                in str(row["content"] or ""))
+                except Exception:
+                    date_hit = False
+            if text and not (rel > 0 or cos > 0 or date_hit):
                 continue
             # 关键词证据：命中二元组/英文词，或短词的单字覆盖率够高
             strong_hits = len(infos & doc_set) if infos else 0
@@ -1557,7 +1586,7 @@ class DataStore:
                 # 关键词完全没命中时，才让语义分当主角。
                 w = vec_weight if not keyword_ok else min(vec_weight, 0.2)
                 rel = (1.0 - w) * rel + w * max(0.0, cos)
-            if text and not keyword_ok:
+            if text and not keyword_ok and not date_hit:
                 # 关键词没证据，就只认"明显更像"的那一条语义结果
                 if not vec_pass or cos < best_cos - 1e-9:
                     continue
@@ -1590,6 +1619,14 @@ class DataStore:
             # （时间问题由【按时间回看】走聊天记录，不靠记忆排序抢）
             if kind == "daily_digest" and (not text or rel >= 0.35):
                 score += 0.04
+            # "昨天我们干了什么"这类问题：把对应那天的日总结直接顶上来
+            if kind == "daily_digest" and span:
+                try:
+                    date_tag = "%04d-%02d-%02d" % (int(span["year"]), int(span["month"]), int(span["day"]))
+                    if date_tag in str(row["content"] or ""):
+                        score += 0.2
+                except Exception:
+                    pass
             elif kind == "conversation_summary" and (not text or rel >= 0.35):
                 score += 0.02
             item = dict(row)

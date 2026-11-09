@@ -71,6 +71,16 @@ class SummaryMergeKeepsTextTests(unittest.TestCase):
     def tearDown(self):
         self.store.close()
 
+
+    def test_yesterday_question_pulls_that_day_digest(self):
+        from datetime import date, timedelta
+        tag = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+        self.store.remember(BOT, UID, "【" + tag + "】他当天在家修 bug，中午吃了猪肉粽。",
+                            kind="daily_digest", importance=0.7)
+        rows = self.store.recall(BOT, UID, "昨天我们主要干了什么", limit=3)
+        self.assertTrue(rows)
+        self.assertEqual(rows[0]["kind"], "daily_digest")
+
     def test_merged_summary_keeps_all_text(self):
         a = self.store.remember(BOT, UID, "2026-11-08 上午和主人聊了修 bug。", kind="conversation_summary")
         b = self.store.remember(BOT, UID, "2026-11-08 晚上和主人聊了晚饭和天气。", kind="conversation_summary")
