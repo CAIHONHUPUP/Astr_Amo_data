@@ -489,6 +489,15 @@ class DataStore:
                     PRIMARY KEY (bot_id, platform, uid)
                 );
                 CREATE INDEX IF NOT EXISTS idx_link_pid ON person_links(bot_id, pid);
+                CREATE TABLE IF NOT EXISTS identity_alias (
+                    bot_id TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    uid TEXT NOT NULL,
+                    alias_platform TEXT NOT NULL,
+                    alias_uid TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (bot_id, platform, uid)
+                );
                 """
             )
             self._migrate_columns()
@@ -645,6 +654,7 @@ class DataStore:
         bot_id, platform, uid = str(bot_id), str(platform or ""), str(uid)
         if not uid:
             return 0
+        platform, uid = self._alias_of(bot_id, platform, uid)
         display = _clean(name, 64)
         with self.lock:
             row = self.conn.execute(
@@ -920,7 +930,53 @@ class DataStore:
             "updated_at": int(row["updated_at"] or 0),
         }
 
+
+    def _alias_of(self, bot_id: str, platform: str, uid: str):
+        """把一个 (平台, uid) 换成规范身份；没配别名就原样返回。"""
+        platform, uid = str(platform or ""), str(uid)
+        try:
+            row = self.conn.execute(
+                "SELECT alias_platform, alias_uid FROM identity_alias "
+                "WHERE bot_id=? AND platform=? AND uid=?",
+                (str(bot_id), platform, uid),
+            ).fetchone()
+        except Exception:
+            return (platform, uid)
+        if row and str(row["alias_platform"] or "").strip():
+            return (str(row["alias_platform"]), str(row["alias_uid"]))
+        return (platform, uid)
+
+    def set_identity_alias(self, bot_id: str, platform: str, uid: str,
+                           alias_platform: str = "", alias_uid: str = "") -> bool:
+        """登记「导出的旧身份」→「规范身份」，之后 resolve_person 会自动走别名。"""
+        try:
+            with self.lock:
+                self.conn.execute(
+                    "INSERT INTO identity_alias(bot_id, platform, uid, alias_platform, alias_uid, created_at) "
+                    "VALUES(?,?,?,?,?,?) ON CONFLICT(bot_id, platform, uid) DO UPDATE SET "
+                    "alias_platform=excluded.alias_platform, alias_uid=excluded.alias_uid",
+                    (str(bot_id), str(platform), str(uid), str(alias_platform),
+                     str(alias_uid), _now()),
+                )
+                self.conn.commit()
+            return True
+        except Exception:
+            return False
+
+    def list_identity_aliases(self, bot_id: str = "") -> List[Dict[str, Any]]:
+        where, params = _bot_filter(bot_id)
+        try:
+            with self.lock:
+                rows = self.conn.execute(
+                    "SELECT bot_id, platform, uid, alias_platform, alias_uid FROM identity_alias "
+                    "WHERE 1=1" + where + " ORDER BY platform, uid", params,
+                ).fetchall()
+            return [dict(row) for row in rows]
+        except Exception:
+            return []
+
     def person_of(self, bot_id: str, platform: str, uid: str) -> Dict[str, Any]:
+        platform, uid = self._alias_of(str(bot_id), str(platform or ""), str(uid))
         with self.lock:
             row = self.conn.execute(
                 "SELECT pid FROM person_links WHERE bot_id=? AND platform=? AND uid=?",
