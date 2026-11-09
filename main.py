@@ -48,7 +48,7 @@ except ImportError:  # 单文件加载时的兜底
     from store import DataStore  # type: ignore
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.4.4"
+PLUGIN_VERSION = "2.4.6"
 DEFAULT_BOT_ID = "default"
 
 
@@ -199,6 +199,29 @@ class MemoryAPI:
             return self._store.list_messages(self._bot(bot_id), umo, limit, uid=uid)
         except Exception as exc:
             logger.debug("[amo_data] 读聊天记录失败: %s" % exc)
+            return []
+
+    async def recall_messages(self, bot_id: str, query: str = "", umo: str = "",
+                              uid: str = "", limit: int = 200) -> dict:
+        """按时间回看：返回 {"messages": [...], "label": "昨天下午"}。
+
+        label 不能省：amo 侧 ``if not label: return ""``，只给 messages 会被整段丢掉。
+        """
+        try:
+            items = self._store.recall_messages(self._bot(bot_id), query=query, umo=umo,
+                                                uid=uid, limit=limit)
+            return {"messages": items, "label": self._store._time_label(query)}
+        except Exception as exc:
+            logger.debug("[amo_data] 时间回看失败: %s" % exc)
+            return {"messages": [], "label": ""}
+
+    async def messages_since(self, bot_id: str, uid: str = "", since: int = 0,
+                             limit: int = 400) -> list:
+        """since 之后的消息（里程碑）。"""
+        try:
+            return self._store.messages_since(self._bot(bot_id), uid=uid, since=since, limit=limit)
+        except Exception as exc:
+            logger.debug("[amo_data] 里程碑取聊天失败: %s" % exc)
             return []
 
     async def delete_message(self, bot_id: str, message_id: int) -> bool:

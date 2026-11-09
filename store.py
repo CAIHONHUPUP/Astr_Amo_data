@@ -987,6 +987,193 @@ class DataStore:
             self.conn.commit()
             return int(cur.lastrowid or 0)
 
+    # ---------- 时间回看 ----------
+    _CN_NUM = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+               "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+    _PERIODS = (
+        (("凌晨",), 0, 6),
+        (("早上", "早晨", "上午"), 6, 12),
+        (("中午",), 11, 14),
+        (("下午",), 12, 18),
+        (("傍晚", "晚上", "今晚", "昨晚", "夜里", "深夜"), 18, 24),
+    )
+
+    @classmethod
+    def _cn_int(cls, text: str) -> int:
+        """「6 / 六 / 十一 / 二十三」→ int；认不出返回 0。"""
+        raw = str(text or "").strip()
+        if raw.isdigit():
+            return int(raw)
+        if "十" in raw:
+            left, _, right = raw.partition("十")
+            tens = cls._CN_NUM.get(left, 1) if left else 1
+            ones = cls._CN_NUM.get(right, 0) if right else 0
+            return tens * 10 + ones
+        return cls._CN_NUM.get(raw, 0)
+
+    @classmethod
+    def _day_window(cls, day, text: str):
+        """一天的范围；话里带「下午/晚上」就只取那一段。"""
+        from datetime import timedelta as _td
+        for words, start_hour, end_hour in cls._PERIODS:
+            if any(word in text for word in words):
+                return day + _td(hours=start_hour), day + _td(hours=end_hour)
+        return day, day + _td(days=1)
+
+    @classmethod
+    def _time_window(cls, query: str) -> tuple:
+        """把「昨天下午 / 前天 / 上周三 / 11月6号晚上 / 最近3天」换成秒级时间窗。
+
+        识别不了返回 (0, 0)；调用方据此返回空列表，避免「标签写上周三、
+        内容却是今天的」这种更糟的错配。
+        """
+        from datetime import datetime as _dt, timedelta as _td
+        text = str(query or "")
+        now = _dt.now()
+        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day = None
+        if "大前天" in text:
+            day = today - _td(days=3)
+        elif "前天" in text:
+            day = today - _td(days=2)
+        elif "昨天" in text or "昨晚" in text:
+            day = today - _td(days=1)
+        elif "今天" in text or "今晚" in text:
+            day = today
+        if day is not None:
+            start, end = cls._day_window(day, text)
+            return int(start.timestamp()), int(end.timestamp())
+
+        # 上周三 / 这周五 / 礼拜天
+        m = re.search(r"(上上|上|这|本)?\s*(周|星期|礼拜)\s*([一二三四五六日天1-7])", text)
+        if m:
+            idx = cls._cn_int(m.group(3)) - 1  # 周一=0
+            if 0 <= idx <= 6:
+                monday = today - _td(days=today.weekday())
+                target = monday + _td(days=idx)
+                if m.group(1) == "上":
+                    target -= _td(days=7)
+                elif m.group(1) == "上上":
+                    target -= _td(days=14)
+                elif target > today:
+                    target -= _td(days=7)
+                start, end = cls._day_window(target, text)
+                return int(start.timestamp()), int(end.timestamp())
+
+        # 11月6号 / 11月6号晚上
+        m = re.search(r"(?:(\d{4})\s*年)?\s*(\d{1,2}|[一二三四五六七八九十]{1,3})\s*月"
+                      r"\s*(\d{1,2}|[一二三四五六七八九十]{1,3})\s*[号日]?", text)
+        if m:
+            year = int(m.group(1)) if m.group(1) else today.year
+            month = cls._cn_int(m.group(2)) or 1
+            day_num = cls._cn_int(m.group(3)) or 1
+            try:
+                target = _dt(year, month, day_num)
+            except ValueError:
+                target = None
+            if target is not None:
+                if not m.group(1) and target > today:
+                    try:
+                        target = _dt(year - 1, month, day_num)
+                    except ValueError:
+                        target = None
+            if target is not None:
+                start, end = cls._day_window(target, text)
+                return int(start.timestamp()), int(end.timestamp())
+
+        # 六号 / 6号（没写月份：本月还没到就算上个月）
+        m = re.search(r"(?<!\d)(\d{1,2}|[一二三四五六七八九十]{1,3})\s*[号日]", text)
+        if m:
+            day_num = cls._cn_int(m.group(1))
+            if 1 <= day_num <= 31:
+                try:
+                    target = today.replace(day=day_num)
+                except ValueError:
+                    target = None
+                if target is not None and target > today:
+                    prev_month_end = today.replace(day=1) - _td(days=1)
+                    try:
+                        target = prev_month_end.replace(day=day_num)
+                    except ValueError:
+                        target = None
+                if target is not None:
+                    start, end = cls._day_window(target, text)
+                    return int(start.timestamp()), int(end.timestamp())
+
+        if "上个月" in text or "上月" in text:
+            first = today.replace(day=1)
+            start = (first - _td(days=1)).replace(day=1)
+            return int(start.timestamp()), int(first.timestamp())
+        if "去年" in text:
+            start = _dt(today.year - 1, 1, 1)
+            end = _dt(today.year, 1, 1)
+            return int(start.timestamp()), int(end.timestamp())
+        if "今年" in text:
+            return int(_dt(today.year, 1, 1).timestamp()), int((now + _td(seconds=1)).timestamp())
+
+        m = re.search(r"最近\s*(\d+)\s*(天|日|小时|分钟)", text)
+        if m:
+            amount = max(1, int(m.group(1)))
+            if m.group(2) in ("小时", "分钟"):
+                unit = _td(hours=1) if m.group(2) == "小时" else _td(minutes=1)
+                return int((now - unit * amount).timestamp()), int((now + _td(seconds=1)).timestamp())
+            start = today - _td(days=amount - 1)
+            return int(start.timestamp()), int((today + _td(days=1)).timestamp())
+        return 0, 0
+
+    @classmethod
+    def _time_label(cls, query: str) -> str:
+        """给时间回看一个标题（amo 的 render 必须有 label，否则整段丢弃）。"""
+        text = str(query or "")
+        for word in ("大前天", "前天", "昨天下午", "昨天晚上", "昨天",
+                     "今天下午", "今天晚上", "昨天凌晨", "今天凌晨", "昨晚", "今晚", "今天"):
+            if word in text:
+                return word
+        for pattern in (r"(上上|上|这|本)?\s*(周|星期|礼拜)\s*[一二三四五六日天1-7]",
+                        r"(?:\d{4}\s*年)?\s*\d{1,2}\s*月\s*\d{1,2}\s*[号日]?",
+                        r"(?<!\d)(?:\d{1,2}|[一二三四五六七八九十]{1,3})\s*[号日]"):
+            m = re.search(pattern, text)
+            if m:
+                label = m.group(0).strip()
+                if label:
+                    return label
+        for word in ("上个月", "上月", "去年", "今年"):
+            if word in text:
+                return word
+        m = re.search(r"最近\s*(\d+)\s*(天|日|小时|分钟)", text)
+        if m:
+            return "最近" + m.group(1) + m.group(2)
+        return ""
+
+    def recall_messages(self, bot_id: str, query: str = "", umo: str = "",
+                        uid: str = "", limit: int = 200) -> List[Dict[str, Any]]:
+        """按时间回看的一段聊天（时间回看 / 每日总结都调它）。
+
+        之前 amo 调 ``recall_messages``，这边只有 ``list_messages``，两边契约对不上，
+        功能静默失效（amo 侧 callable=False 直接 return）。返回按时间正序。
+        """
+        limit = max(1, min(int(limit or 200), 1000))
+        start, end = self._time_window(query)
+        if not start or not end:
+            return []
+        # 时间窗过滤发生在 SQL 的 LIMIT 之后，候选池太小会把整段时间筛空
+        # （比如「昨天」但最近 12 条全是今天的），所以先多取一些再筛。
+        pool = min(1000, max(limit * 8, 400))
+        rows = self.list_messages(bot_id, umo=umo, limit=pool, uid=uid)
+        rows = [r for r in rows if start <= int(r.get("created_at") or 0) < end]
+        rows = sorted(rows, key=lambda r: (int(r.get("created_at") or 0), int(r.get("id") or 0)))
+        return rows[-limit:]
+
+    def messages_since(self, bot_id: str, uid: str = "", since: int = 0,
+                       limit: int = 400) -> List[Dict[str, Any]]:
+        """取某个时间点之后的消息（里程碑用），按时间正序。"""
+        limit = max(1, min(int(limit or 400), 2000))
+        pool = min(2000, max(limit * 4, 800))
+        rows = self.list_messages(bot_id, umo="", limit=pool, uid=uid)
+        rows = [r for r in rows if int(r.get("created_at") or 0) >= int(since or 0)]
+        rows = sorted(rows, key=lambda r: (int(r.get("created_at") or 0), int(r.get("id") or 0)))
+        return rows[-limit:]
+
     def list_messages(self, bot_id: str, umo: str = "", limit: int = 200,
                       pid: int = 0, platform: str = "", uid: str = "") -> List[Dict[str, Any]]:
         where, params = _bot_filter(bot_id)
