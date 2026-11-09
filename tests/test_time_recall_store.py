@@ -72,11 +72,11 @@ class RecallMessagesTests(unittest.TestCase):
         self.bot = "bot1"
         self.uid = "10001"
         self.umo = "aiocqhttp:FriendMessage:10001"
-        now = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
-        yesterday = now - timedelta(days=1)
-        self._add("昨天的午饭", _ts(yesterday + timedelta(hours=1)))
-        self._add("昨天下午的班", _ts(yesterday + timedelta(hours=14)))
-        self._add("今天的消息", _ts(now))
+        today0 = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday0 = today0 - timedelta(days=1)
+        self._add("昨天的午饭", _ts(yesterday0 + timedelta(hours=11)))
+        self._add("昨天下午的班", _ts(yesterday0 + timedelta(hours=14)))
+        self._add("今天的消息", _ts(today0 + timedelta(hours=9)))
 
     def _add(self, text, created_at):
         mid = self.store.add_message(self.bot, self.umo, self.uid, "他", "user", text)
