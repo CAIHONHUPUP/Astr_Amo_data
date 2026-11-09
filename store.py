@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sqlite3
@@ -83,6 +84,77 @@ def _name_key(text: Any) -> str:
     """认人用的名字归一化：去掉空白和常见装饰符号，兼容大小写。"""
     value = re.sub(r"[\s\u3000·•、,，。.!！?？~～\-—_]+", "", str(text or ""))
     return value.strip().lower()[:32]
+
+
+
+# ---------------------------------------------------------------------------
+# 检索打分（BM25 + importance + 遗忘曲线）
+# ---------------------------------------------------------------------------
+
+RECALL_POOL = 400              # 候选池上限：先粗筛这么多条，再精排
+RECALL_HALF_LIFE_DAYS = 45.0   # 遗忘半衰期（天）：45 天新鲜度掉一半
+RECALL_W_REL = 0.60            # 相关性权重
+RECALL_W_IMPORTANCE = 0.30     # 重要度权重
+RECALL_W_FRESH = 0.10          # 新鲜度权重
+RECALL_IMPORTANCE_DECAY = 0.10 # importance 自身也随时间软化（0=不衰减）
+RECALL_MIN_REL = 0.05          # 有 query 时，相关性低于此值直接丢弃
+
+
+def _recall_tokens(text: Any) -> List[str]:
+    """中文按 单字 + 二元组 切，英文数字按词切。
+
+    中文没有空格，FTS5 的 unicode61 会把整句当一个 token，
+    「两个字」「上班」这种短词永远 MATCH 不到；这里用单字+二元组，
+    保证「猫」「茶」「上班」这种 1~2 字输入也能参与打分。
+    """
+    s = str(text or "").lower()
+    tokens: List[str] = re.findall(r"[a-z0-9_]{2,}", s)
+    chars = re.findall(r"[\u4e00-\u9fff]", s)
+    tokens.extend(chars)
+    tokens.extend(["".join(pair) for pair in zip(chars, chars[1:])])
+    return tokens
+
+
+def _bm25_scores(q_tokens: List[str], docs: List[List[str]], k1: float = 1.4,
+                 b: float = 0.75) -> List[float]:
+    """标准 BM25（Okapi），返回每个 doc 的原始分。"""
+    if not docs or not q_tokens:
+        return [0.0 for _ in docs]
+    n = len(docs)
+    avgdl = sum(len(d) for d in docs) / float(n) or 1.0
+    df: Dict[str, int] = {}
+    for d in docs:
+        for term in set(d):
+            df[term] = df.get(term, 0) + 1
+    out: List[float] = []
+    for d in docs:
+        dl = len(d) or 1
+        score = 0.0
+        tf: Dict[str, int] = {}
+        for term in d:
+            tf[term] = tf.get(term, 0) + 1
+        for term in q_tokens:
+            if term not in tf:
+                continue
+            freq = tf[term]
+            idf = (n - df.get(term, 0) + 0.5) / (df.get(term, 0) + 0.5)
+            idf = math.log(1.0 + idf)
+            score += idf * (freq * (k1 + 1)) / (freq + k1 * (1 - b + b * dl / avgdl))
+        out.append(score)
+    return out
+
+
+def _freshness(ts: Any, now: int, half_life_days: float) -> float:
+    """遗忘曲线：0.5 ** (age/half_life)。未来的时间按 1 处理。"""
+    try:
+        stamp = float(ts or 0)
+    except (TypeError, ValueError):
+        stamp = 0.0
+    if stamp <= 0:
+        return 1.0
+    age_days = max(0.0, (now - stamp) / 86400.0)
+    hl = max(1.0, float(half_life_days or RECALL_HALF_LIFE_DAYS))
+    return 0.5 ** (age_days / hl)
 
 
 class DataStore:
@@ -741,12 +813,28 @@ class DataStore:
         limit: int = 6,
         scope: str = "",
         group_id: str = "",
+        half_life_days: float = RECALL_HALF_LIFE_DAYS,
+        importance_decay: float = RECALL_IMPORTANCE_DECAY,
+        pool_size: int = RECALL_POOL,
     ) -> List[Dict[str, Any]]:
-        """query 为空时按重要度+最近访问排序；有 query 时先走 FTS5，失败退回 LIKE。"""
+        """按「相关性(BM25) + 重要度 + 新鲜度(遗忘曲线)」综合打分召回。
+
+        改动点相对旧实现：
+        1. 候选池不再只靠 FTS5 MATCH / LIKE 单条路径，而是「LIKE 命中 ∪ 最近 N 条」，
+           短词（1~2 字）也能通过单字/二元组 BM25 命中；
+        2. 排序不再是 importance DESC, last_hit_at DESC，而是综合分数；
+        3. 加遗忘曲线：越久没被访问/越旧的记忆，权重按半衰期衰减，
+           高 important 记忆衰减更慢，低重要闲聊记忆自然沉底，但不硬删除。
+        对外参数、返回结构完全不变（新增的都是带默认值的关键字参数）。
+        """
         bot_id, uid = str(bot_id), str(uid)
         limit = max(1, min(int(limit or 6), 100))
+        pool_size = max(limit, min(int(pool_size or RECALL_POOL), 2000))
+        text = _clean(query, 200)
+        now = _now()
+
         base = (
-            "SELECT id, content, kind, importance, created_at, hit_count, scope, group_id "
+            "SELECT id, content, kind, importance, created_at, last_hit_at, hit_count, scope, group_id "
             "FROM memories WHERE bot_id=? AND uid=?"
         )
         params: List[Any] = [bot_id, uid]
@@ -758,36 +846,66 @@ class DataStore:
             params.append(str(group_id))
 
         rows: List[sqlite3.Row] = []
-        text = _clean(query, 200)
+        # 粗筛 1：子串命中（短词靠这条兜底）
         if text:
-            try:
-                with self.lock:
-                    rows = self.conn.execute(
-                        "SELECT m.id, m.content, m.kind, m.importance, m.created_at, "
-                        "m.hit_count, m.scope, m.group_id FROM memories m "
-                        "JOIN memories_fts f ON f.rowid = m.id "
-                        "WHERE f.content MATCH ? AND m.bot_id=? AND m.uid=? "
-                        "ORDER BY m.importance DESC, m.last_hit_at DESC LIMIT ?",
-                        (text, bot_id, uid, limit),
-                    ).fetchall()
-            except Exception:
-                rows = []
-            if not rows:
-                with self.lock:
-                    rows = self.conn.execute(
-                        base + " AND content LIKE ? ORDER BY importance DESC, last_hit_at DESC LIMIT ?",
-                        params + ["%" + text + "%", limit],
-                    ).fetchall()
-        else:
             with self.lock:
                 rows = self.conn.execute(
-                    base + " ORDER BY importance DESC, last_hit_at DESC LIMIT ?",
-                    params + [limit],
+                    base + " AND content LIKE ? ORDER BY last_hit_at DESC, created_at DESC LIMIT ?",
+                    params + ["%" + text + "%", pool_size],
                 ).fetchall()
+        # 粗筛 2：补最近活跃的，保证词序不同的记忆（「上班」vs「上夜班」）也有候选
+        with self.lock:
+            seen = {int(r["id"]) for r in rows}
+            more = self.conn.execute(
+                base + " ORDER BY last_hit_at DESC, created_at DESC LIMIT ?",
+                params + [pool_size],
+            ).fetchall()
+        rows.extend([r for r in more if int(r["id"]) not in seen])
 
-        items = [dict(row) for row in rows]
+        if not rows:
+            return []
+
+        contents = [str(r["content"] or "") for r in rows]
+        q_tokens = _recall_tokens(text) if text else []
+        docs = [_recall_tokens(c) for c in contents]
+        raw = _bm25_scores(q_tokens, docs) if q_tokens else [0.0 for _ in rows]
+
+        scored: List[Dict[str, Any]] = []
+        top_rel = max(raw) if raw else 0.0
+        for idx, row in enumerate(rows):
+            rel = (raw[idx] / top_rel) if top_rel > 0 else 0.0
+            if text and rel < RECALL_MIN_REL:
+                continue
+            fresh = _freshness(row["last_hit_at"] or row["created_at"], now, half_life_days)
+            try:
+                imp = max(0.0, min(1.0, float(row["importance"] or 0.5)))
+            except (TypeError, ValueError):
+                imp = 0.5
+            weight = max(0.0, min(0.9, float(importance_decay or 0.0)))
+            imp_eff = imp * (1.0 - weight) + imp * weight * fresh
+            try:
+                hits = int(row["hit_count"] or 0)
+            except (TypeError, ValueError):
+                hits = 0
+            hit_boost = min(1.0, math.log1p(hits) / math.log1p(10)) if hits > 0 else 0.0
+
+            if text:
+                score = (
+                    RECALL_W_REL * rel
+                    + RECALL_W_IMPORTANCE * imp_eff
+                    + RECALL_W_FRESH * (0.6 * fresh + 0.4 * hit_boost)
+                )
+            else:
+                denom = RECALL_W_IMPORTANCE + RECALL_W_FRESH
+                score = (RECALL_W_IMPORTANCE * imp_eff + RECALL_W_FRESH * (0.6 * fresh + 0.4 * hit_boost)) / denom
+            item = dict(row)
+            item["score"] = round(score, 4)
+            scored.append(item)
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        items = scored[:limit]
+
         if items:
-            now = _now()
             with self.lock:
                 self.conn.executemany(
                     "UPDATE memories SET hit_count=hit_count+1, last_hit_at=? WHERE id=?",
