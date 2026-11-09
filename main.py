@@ -48,7 +48,7 @@ except ImportError:  # 单文件加载时的兜底
     from store import DataStore  # type: ignore
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.2.0"
+PLUGIN_VERSION = "2.2.2"
 DEFAULT_BOT_ID = "default"
 
 
@@ -601,7 +601,21 @@ class AmoDataPlugin(Star):
         payload = await self._body()
         bot_id = self._bot_id(payload)
         uid = str(payload.get("uid") or "").strip()
-        return {"code": 0, "data": {"items": self.store.list_relations(bot_id, uid)}}
+        items = self.store.list_relations(bot_id, uid)
+        # 面板上直接显名字，不要只给一串 uid
+        names = {}
+        try:
+            for row in self.store.list_profiles(bot_id, "", 500):
+                key = str(row.get("uid") or "")
+                if key:
+                    names[key] = str(row.get("name") or row.get("alias") or "")
+        except Exception:
+            names = {}
+        for item in items:
+            for side in ("a", "b"):
+                key = str(item.get(side + "_uid") or "")
+                item[side + "_name"] = names.get(key, "")
+        return {"code": 0, "data": {"items": items}}
 
     async def api_relation_save(self):
         payload = await self._body()
