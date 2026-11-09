@@ -38,5 +38,111 @@
     "type": "float",
     "description": "记忆默认重要度",
     "default": 0.5
+  },
+  "recall_pool_size": {
+    "type": "int",
+    "description": "召回候选池条数",
+    "hint": "先粗筛这么多条再精排；库比池子小的时候会自动全量精排，所以默认 400 够用。",
+    "default": 400
+  },
+  "recall_fts_enabled": {
+    "type": "bool",
+    "description": "用 FTS5 trigram 加速记忆召回",
+    "hint": ">=3 个字的查询走全文索引，2 个字仍走 LIKE；SQLite 不支持时自动退回，不影响结果。实测 6k 条时 LIKE+分层池已经够快，这里默认关，记忆到几万条再开。",
+    "default": false
+  },
+  "recall_recent_pool": {
+    "type": "int",
+    "description": "「最近活跃」候选条数",
+    "hint": "和关键词命中那一路合并成候选池；600 在几千条记忆时够用，调大更全但更慢。",
+    "default": 600
+  },
+  "recall_min_matched_terms": {
+    "type": "int",
+    "description": "最少命中几个关键词",
+    "hint": "0=关闭这道闸（查不到也会硬推一条）；1=至少要命中一个二元组/英文词才算记得。",
+    "default": 1
+  },
+  "recall_half_life_days": {
+    "type": "float",
+    "description": "遗忘半衰期（天）",
+    "hint": "越久没被想起来的记忆权重越低；45 天掉一半，重要度高的衰减更慢。",
+    "default": 45.0
+  },
+  "recall_importance_decay": {
+    "type": "float",
+    "description": "重要度随时间的软化比例",
+    "hint": "0=重要度不随时间变；0.1=重要度也有 10% 跟着新鲜度走。",
+    "default": 0.1
+  },
+  "auto_dedupe": {
+    "type": "bool",
+    "description": "自动去重",
+    "hint": "同一句话再说一遍、或只差标点的近重复，合并成一条并抬高重要度，不再堆重复记忆。",
+    "default": true
+  },
+  "auto_dedupe_ratio": {
+    "type": "float",
+    "description": "近重复判定阈值",
+    "hint": "二元组 Jaccard 相似度超过这个值算同一件事（0.92 很保守，调低会合并得更多）。",
+    "default": 0.92
+  },
+  "embedding_enabled": {
+    "type": "bool",
+    "description": "启用语义向量召回",
+    "hint": "打开后会用本地 embedding 服务（默认 Ollama 的 bge-m3）给记忆和查询算向量，同义改写也能搜到；服务不可用会自动退回纯关键词检索。",
+    "default": false
+  },
+  "embedding_base": {
+    "type": "string",
+    "description": "Embedding 服务地址",
+    "hint": "Ollama 默认 http://127.0.0.1:11434（会请求 /v1/embeddings）；填完整 URL 也可以。",
+    "default": "http://127.0.0.1:11434"
+  },
+  "embedding_model": {
+    "type": "string",
+    "description": "Embedding 模型名",
+    "default": "bge-m3"
+  },
+  "embedding_timeout": {
+    "type": "float",
+    "description": "Embedding 超时（秒）",
+    "hint": "超时或失败后 60 秒内不再尝试，避免每条消息都卡住。",
+    "default": 3.0
+  },
+  "recall_vec_weight": {
+    "type": "float",
+    "description": "语义分权重",
+    "hint": "0.45 = 相关性里 45% 看语义、55% 看关键词；设为 0 就等于只做关键词。",
+    "default": 0.45
+  },
+  "recall_vec_min_cos": {
+    "type": "float",
+    "description": "纯语义命中的最低相似度",
+    "hint": "关键词一条都没命中时，语义相似度要超过这个值才算记得；bge-m3 的中文余弦偏平，0.45 比较合适。",
+    "default": 0.45
+  },
+  "recall_vec_min_margin": {
+    "type": "float",
+    "description": "语义命中的领先幅度",
+    "hint": "第一名要比第二名明显更像（余弦差 ≥ 这个值）才算语义命中；无关问题时大家都很像，就靠这个挡住。",
+    "default": 0.08
+  },
+  "embedding_backfill_limit": {
+    "type": "int",
+    "description": "每次补向量的条数",
+    "hint": "启动时和每小时维护各补一批，旧记忆会慢慢补全，不阻塞聊天。",
+    "default": 200
+  },
+  "backup_daily": {
+    "type": "bool",
+    "description": "每天自动备份数据库",
+    "default": true,
+    "hint": "每天备份一次 amo_data.db 到 plugin_data/Astr_Amo_data/backups/，保留最近 N 份。"
+  },
+  "backup_keep": {
+    "type": "int",
+    "description": "备份保留份数",
+    "default": 7
   }
 }

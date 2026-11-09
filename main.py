@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 
@@ -46,6 +47,17 @@ try:
     from .store import DataStore
 except ImportError:  # 单文件加载时的兜底
     from store import DataStore  # type: ignore
+
+try:
+    from .time_query import parse_time_span, describe_span
+except ImportError:  # 单文件加载时的兜底
+    try:
+        from time_query import parse_time_span, describe_span  # type: ignore
+    except Exception:  # pragma: no cover - 极端情况下退化成"不识别时间"
+        def parse_time_span(*args, **kwargs):
+            return None
+        def describe_span(*args, **kwargs):
+            return ""
 
 PLUGIN_NAME = "Astr_Amo_data"
 PLUGIN_VERSION = "2.4.8"
@@ -122,7 +134,10 @@ class MemoryAPI:
     async def recall(self, bot_id: str, uid: str, query: str = "", limit: int = 6,
                      scope: str = "", group_id: str = "") -> list:
         try:
-            return self._store.recall(
+            # recall 里有 BM25 打分（几千条记忆时几十毫秒）和可选的 embedding 网络请求，
+            # 放线程里跑，别把 AstrBot 的事件循环卡住（卡住=所有聊天都排队）
+            return await asyncio.to_thread(
+                self._store.recall,
                 self._bot(bot_id), uid, query,
                 limit=limit, scope=scope, group_id=group_id,
             )
@@ -185,10 +200,12 @@ class MemoryAPI:
             return False
 
     async def add_message(self, bot_id: str, umo: str, uid: str = "", name: str = "",
-                           role: str = "user", content: str = "", platform: str = "") -> int:
+                           role: str = "user", content: str = "", platform: str = "",
+                           message_id: str = "") -> int:
         try:
             return self._store.add_message(
-                self._bot(bot_id), umo, uid, name, role, content, platform=platform
+                self._bot(bot_id), umo, uid, name, role, content,
+                platform=platform, message_id=message_id,
             )
         except Exception as exc:
             logger.debug("[amo_data] 写聊天记录失败: %s" % exc)
@@ -201,28 +218,112 @@ class MemoryAPI:
             logger.debug("[amo_data] 读聊天记录失败: %s" % exc)
             return []
 
+    def _backup_dir(self) -> str:
+        return os.path.join(os.path.dirname(getattr(self._store, "path", "") or "."), "backups")
+
+    async def export_snapshot(self, bot_id: str = "") -> dict:
+        """导出画像 / 记忆 / 关系 / 人物 / 身份别名（不传 bot_id 就导出全部）。"""
+        try:
+            return self._store.export_snapshot(self._bot(bot_id) if bot_id else "")
+        except Exception as exc:
+            logger.debug("[amo_data] 导出快照失败: %s" % exc)
+            return {}
+
+    async def import_snapshot(self, data: dict) -> dict:
+        """合并导入快照（记忆按内容去重，重复导入不会翻倍）。"""
+        try:
+            return self._store.import_snapshot(data or {})
+        except Exception as exc:
+            logger.debug("[amo_data] 导入快照失败: %s" % exc)
+            return {"error": 1}
+
+    async def backup_now(self, keep: int = 7) -> str:
+        try:
+            return self._store.backup_database(self._backup_dir(), keep)
+        except Exception as exc:
+            logger.debug("[amo_data] 数据库备份失败: %s" % exc)
+            return ""
+
+    async def list_backups(self) -> list:
+        try:
+            return self._store.list_backups(self._backup_dir())
+        except Exception:
+            return []
+
+    async def restore_backup(self, name: str, bot_id: str = "") -> dict:
+        """从 backups/ 里的某个 .db 恢复（合并语义，不覆盖现有数据）。"""
+        safe = os.path.basename(str(name or ""))
+        path = os.path.join(self._backup_dir(), safe)
+        try:
+            snapshot = self._store.load_snapshot_file(path, self._bot(bot_id) if bot_id else "")
+            if not snapshot:
+                return {"error": 1}
+            return self._store.import_snapshot(snapshot)
+        except Exception as exc:
+            logger.debug("[amo_data] 恢复备份失败: %s" % exc)
+            return {"error": 1}
+
+    async def messages_since(self, bot_id: str, uid: str, since_ts: int = 0,
+                             limit: int = 200) -> list:
+        """增量聊天（里程碑归档用）：某个 uid 在 since_ts 之后的消息。"""
+        try:
+            return self._store.messages_since(self._bot(bot_id), uid, since_ts, limit)
+        except Exception as exc:
+            logger.debug("[amo_data] 读增量聊天失败: %s" % exc)
+            return []
+
+    async def messages_between(self, bot_id: str, start_ts: int, end_ts: int,
+                               uid: str = "", limit: int = 2000) -> list:
+        """某个时间段内的聊天（陪伴插件写日记用）。"""
+        try:
+            return self._store.messages_between(
+                self._bot(bot_id), start_ts, end_ts, uid, limit
+            )
+        except Exception as exc:
+            logger.debug("[amo_data] 读时间段聊天失败: %s" % exc)
+            return []
+
     async def recall_messages(self, bot_id: str, query: str = "", umo: str = "",
                               uid: str = "", limit: int = 200) -> dict:
-        """按时间回看：返回 {"messages": [...], "label": "昨天下午"}。
+        """按时间说法取聊天记录：年 → 月日 → 小时 → 具体消息（四级漏斗）。
 
-        label 不能省：amo 侧 ``if not label: return ""``，只给 messages 会被整段丢掉。
+        查询里没提时间就退回最近消息；返回的正文**不带时间戳**，
+        时间只放在 ``span`` 里（调用方要显示日期时自己用）。
         """
         try:
-            items = self._store.recall_messages(self._bot(bot_id), query=query, umo=umo,
-                                                uid=uid, limit=limit)
-            return {"messages": items, "label": self._store._time_label(query)}
+            span = parse_time_span(query)
+            if not span:
+                rows = self._store.list_messages(self._bot(bot_id), umo, limit, uid=uid)
+                return {"messages": list(reversed(rows)), "span": None, "path": {},
+                        "label": "最近 %d 条" % len(rows)}
+            rows, path = self._store.hierarchical_messages(
+                self._bot(bot_id), span, umo=umo, uid=uid, limit=limit,
+            )
+            return {"messages": rows, "span": span, "path": path,
+                    "label": describe_span(span)}
         except Exception as exc:
-            logger.debug("[amo_data] 时间回看失败: %s" % exc)
-            return {"messages": [], "label": ""}
+            logger.debug("[amo_data] 按时间取聊天记录失败: %s" % exc)
+            return {"messages": [], "span": None, "path": {}, "label": ""}
 
-    async def messages_since(self, bot_id: str, uid: str = "", since: int = 0,
-                             limit: int = 400) -> list:
-        """since 之后的消息（里程碑）。"""
+    async def compress_memories(self, bot_id: str, apply: bool = True) -> dict:
+        """周度整理：合并同天摘要、近重复记忆标过期（不删数据）。"""
         try:
-            return self._store.messages_since(self._bot(bot_id), uid=uid, since=since, limit=limit)
+            return self._store.compress_memories(self._bot(bot_id), apply=bool(apply))
         except Exception as exc:
-            logger.debug("[amo_data] 里程碑取聊天失败: %s" % exc)
-            return []
+            logger.debug("[amo_data] 记忆压缩失败: %s" % exc)
+            return {"merged_summaries": 0, "merged_near_duplicates": 0, "applied": bool(apply)}
+
+    async def archive_stale(self, bot_id: str, days: int = 90,
+                            max_importance: float = 0.3, apply: bool = True) -> dict:
+        """把长期没被想起的低重要度记忆归档（不删除）。"""
+        try:
+            return self._store.archive_stale(
+                self._bot(bot_id), days=days, max_importance=max_importance, apply=bool(apply)
+            )
+        except Exception as exc:
+            logger.debug("[amo_data] 记忆归档失败: %s" % exc)
+            return {"candidate": 0, "archived": 0, "ids": []}
+
 
     async def delete_message(self, bot_id: str, message_id: int) -> bool:
         try:
@@ -330,7 +431,7 @@ class AmoDataPlugin(Star):
         os.makedirs(data_dir, exist_ok=True)
         self.data_dir = data_dir
         self.db_path = os.path.join(data_dir, "amo_data.db")
-        self.store = DataStore(self.db_path)
+        self.store = DataStore(self.db_path, settings=self._store_settings())
         self.mem = MemoryAPI(self.store)
         self._safe_register_web_apis()
         self._loop_task = None
@@ -341,12 +442,106 @@ class AmoDataPlugin(Star):
             self._loop_task = None
         logger.info("[amo_data] 我想永远记住你 %s 已加载（%s）" % (PLUGIN_VERSION, self.db_path))
 
+    async def _maybe_daily_backup(self, bot_id: str) -> str:
+        """每天自动备份一次数据库，保留 backup_keep 份。"""
+        if not self._cfg_bool("backup_daily", True):
+            return ""
+        import datetime as _dt
+        day = _dt.date.today().strftime("%Y-%m-%d")
+        key = "backup_day:" + day
+        try:
+            if self.store.cache_get(bot_id, key):
+                return ""
+        except Exception:
+            pass
+        path = await self.mem.backup_now(int(self._cfg_int("backup_keep", 7)))
+        try:
+            self.store.cache_set(bot_id, key, "1", ttl=2 * 86400)
+        except Exception:
+            pass
+        if path:
+            logger.info("[amo_data] 每日备份: %s" % os.path.basename(path))
+        return path
+
+    async def _maybe_weekly_cleanup(self, bot_id: str) -> dict:
+        """每周只跑一次：合并同天摘要、近重复去重、归档低价值老记忆。"""
+        import datetime as _dt
+        week = _dt.date.today().strftime("%G-W%V")
+        key = "cleanup_week:" + week
+        try:
+            if self.store.cache_get(bot_id, key):
+                return {"skipped": True}
+        except Exception:
+            pass
+        result = {}
+        try:
+            result["compress"] = await self.mem.compress_memories(bot_id, apply=True)
+        except Exception as exc:
+            result["compress"] = {"error": str(exc)}
+        try:
+            result["archive"] = await self.mem.archive_stale(bot_id, 90, 0.3, apply=True)
+        except Exception as exc:
+            result["archive"] = {"error": str(exc)}
+        try:
+            self.store.cache_set(bot_id, key, "1", ttl=8 * 86400)
+        except Exception:
+            pass
+        logger.info("[amo_data] 每周记忆整理: %s" % result)
+        return result
+
+    async def api_memory_maintain(self):
+        """面板/脚本手动触发整理；payload: {apply: false} 可先预演。"""
+        payload = await self._body()
+        bot_id = self._bot_id(payload)
+        apply = payload.get("apply", True)
+        if isinstance(apply, str):
+            apply = apply.strip().lower() not in ("0", "false", "no", "off")
+        out = {"compress": await self.mem.compress_memories(bot_id, apply=bool(apply)),
+               "archive": await self.mem.archive_stale(bot_id, 90, 0.3, apply=bool(apply))}
+        return {"code": 0, "data": out, "applied": bool(apply)}
+
     # ---------- 配置 ----------
     def _cfg_int(self, key: str, default: int) -> int:
         try:
             return int(self.config.get(key, default))
         except (TypeError, ValueError):
             return default
+
+    def _cfg_float(self, key: str, default: float) -> float:
+        try:
+            return float(self.config.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _cfg_bool(self, key: str, default: bool) -> bool:
+        value = self.config.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on", "是", "开")
+        return bool(value)
+
+    def _store_settings(self) -> dict:
+        """把面板配置翻译成 DataStore 的检索参数（缺的用默认值）。"""
+        return {
+            "pool_size": self._cfg_int("recall_pool_size", 400),
+            "recall_fts_enabled": self._cfg_bool("recall_fts_enabled", False),
+            "recall_recent_pool": self._cfg_int("recall_recent_pool", 600),
+            "min_matched_terms": self._cfg_int("recall_min_matched_terms", 1),
+            "forget_half_life_days": self._cfg_float("recall_half_life_days", 45.0),
+            "importance_decay": self._cfg_float("recall_importance_decay", 0.10),
+            "auto_dedupe": self._cfg_bool("auto_dedupe", True),
+            "near_duplicate_ratio": self._cfg_float("auto_dedupe_ratio", 0.92),
+            "embedding_enabled": self._cfg_bool("embedding_enabled", False),
+            "embedding_base": str(self.config.get("embedding_base") or "http://127.0.0.1:11434"),
+            "embedding_model": str(self.config.get("embedding_model") or "bge-m3"),
+            "embedding_timeout": self._cfg_float("embedding_timeout", 3.0),
+            "vec_weight": self._cfg_float("recall_vec_weight", 0.45),
+            "vec_min_cos": self._cfg_float("recall_vec_min_cos", 0.45),
+            "vec_min_margin": self._cfg_float("recall_vec_min_margin", 0.08),
+            "embedding_backfill": self._cfg_bool("embedding_backfill", True),
+            "embedding_backfill_limit": self._cfg_int("embedding_backfill_limit", 200),
+        }
 
     @property
     def chat_days(self) -> int:
@@ -411,9 +606,15 @@ class AmoDataPlugin(Star):
             ("/memories", self.api_memories),
             ("/memory/save", self.api_memory_save),
             ("/memory/delete", self.api_memory_delete),
+            ("/memory/maintain", self.api_memory_maintain),
             ("/relations", self.api_relations),
             ("/relation/save", self.api_relation_save),
             ("/relation/delete", self.api_relation_delete),
+            ("/backup/now", self.api_backup_now),
+            ("/backup/list", self.api_backup_list),
+            ("/backup/export", self.api_backup_export),
+            ("/backup/import", self.api_backup_import),
+            ("/backup/restore", self.api_backup_restore),
             ("/messages", self.api_messages),
             ("/message/delete", self.api_message_delete),
             ("/message/clear", self.api_message_clear),
@@ -466,6 +667,13 @@ class AmoDataPlugin(Star):
                 "db": self.db_path,
                 "counts": self.store.stats(bot_id),
                 "bots": self.store.bot_ids(),
+                "embedding": self.store.embedding_stats(),
+                "recall": {
+                    "pool_size": self.store.setting("pool_size"),
+                    "min_matched_terms": self.store.setting("min_matched_terms"),
+                    "half_life_days": self.store.setting("forget_half_life_days"),
+                    "auto_dedupe": self.store.setting("auto_dedupe"),
+                },
             },
         }
 
@@ -620,6 +828,39 @@ class AmoDataPlugin(Star):
             return {"code": 1, "msg": "缺少 id"}
         return {"code": 0, "data": {"deleted": self.store.delete_memory(bot_id, memory_id)}}
 
+    async def api_backup_now(self):
+        payload = await self._body()
+        keep = payload.get("keep", self._cfg_int("backup_keep", 7))
+        path = await self.mem.backup_now(int(keep))
+        if not path:
+            return {"code": 1, "msg": "备份失败"}
+        return {"code": 0, "data": {"path": path, "name": os.path.basename(path),
+                                   "items": await self.mem.list_backups()}}
+
+    async def api_backup_list(self):
+        return {"code": 0, "data": {"items": await self.mem.list_backups()}}
+
+    async def api_backup_export(self):
+        payload = await self._body()
+        snapshot = await self.mem.export_snapshot(payload.get("bot_id") or "")
+        return {"code": 0, "data": {"snapshot": snapshot}}
+
+    async def api_backup_import(self):
+        payload = await self._body()
+        snapshot = payload.get("snapshot") if isinstance(payload, dict) else None
+        if not isinstance(snapshot, dict):
+            return {"code": 1, "msg": "缺少 snapshot"}
+        counts = await self.mem.import_snapshot(snapshot)
+        return {"code": 0, "data": counts}
+
+    async def api_backup_restore(self):
+        payload = await self._body()
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            return {"code": 1, "msg": "缺少备份文件名"}
+        counts = await self.mem.restore_backup(name, payload.get("bot_id") or "")
+        return {"code": 0, "data": counts}
+
     async def api_relations(self):
         payload = await self._body()
         bot_id = self._bot_id(payload)
@@ -634,12 +875,12 @@ class AmoDataPlugin(Star):
                     names[key] = str(row.get("name") or row.get("alias") or "")
         except Exception:
             names = {}
-        # 陪伴自己也是关系网节点，但它在数据侧没有画像；面板上显示成「她」
-        names.setdefault("bot", "她")
         for item in items:
             for side in ("a", "b"):
                 key = str(item.get(side + "_uid") or "")
-                item[side + "_name"] = names.get(key, "")
+                # 画像里没有就保留 store 用人物卡算出来的名字（别覆盖成空）
+                if names.get(key):
+                    item[side + "_name"] = names[key]
         return {"code": 0, "data": {"items": items}}
 
     async def api_relation_save(self):
@@ -677,6 +918,14 @@ class AmoDataPlugin(Star):
             pid = 0
         platform = str(payload.get("platform") or "").strip()
         uid = str(payload.get("uid") or "").strip()
+        query = str(payload.get("query") or "").strip()
+        if query:
+            # 带时间说法（昨天下午 / 上周三 / 11月6号晚上10点）就走分层检索：
+            # 年 → 月日 → 小时 → 具体消息，正文不带时间戳
+            result = await self.mem.recall_messages(
+                bot_id, query=query, umo=umo, uid=uid, limit=limit
+            )
+            return {"code": 0, "data": result}
         return {"code": 0, "data": {
             "items": self.store.list_messages(
                 bot_id, umo, limit, pid=pid, platform=platform, uid=uid
@@ -775,7 +1024,7 @@ class AmoDataPlugin(Star):
         while True:
             try:
                 await asyncio.sleep(3600)
-                bot_id = self._bot_id({})
+                bot_id = self._bot_id({}, write=True)  # 空 bot_id 会让清理/压缩变成空转（WHERE bot_id=''）
                 try:
                     await self.mem.maintenance(bot_id, self.chat_days, self.compress_after, self.log_days)
                 except Exception as exc:
@@ -784,6 +1033,21 @@ class AmoDataPlugin(Star):
                     await self.mem.purge_logs(bot_id, self.log_days)
                 except Exception as exc:
                     logger.debug("[amo_data] 日志清理失败: %s" % exc)
+                try:
+                    await self._maybe_weekly_cleanup(bot_id)
+                except Exception as exc:
+                    logger.debug("[amo_data] 每周记忆整理失败: %s" % exc)
+                try:
+                    await self._maybe_daily_backup(bot_id)
+                except Exception as exc:
+                    logger.debug("[amo_data] 每日备份失败: %s" % exc)
+                try:
+                    if self.store.setting("embedding_enabled"):
+                        self.store.backfill_embeddings(
+                            limit=self._cfg_int("embedding_backfill_limit", 200)
+                        )
+                except Exception as exc:
+                    logger.debug("[amo_data] 向量补全失败: %s" % exc)
                 try:
                     from astrbot.core.utils.astrbot_path import get_astrbot_data_path  # noqa: F401
                 except Exception:
