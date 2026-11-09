@@ -65,30 +65,26 @@
         <input class="grow" id="search" placeholder="搜 uid / 称呼 / 备注">
         <button class="ghost" id="btnReload">刷新</button>
       </div>
-      <div class="hint">点一条进入编辑：改名字、称呼、关系，保存后立即写回库。</div>
+      <div class="hint">点一条查看画像。修改请到陪伴面板；这里只读，避免两边各改一份。</div>
     </div>
     <div class="list" id="profileList"></div>
 
     <div class="card" id="editor" hidden>
       <div class="row">
-        <strong class="grow" id="editorTitle">编辑画像</strong>
+        <strong class="grow" id="editorTitle">人物画像（只读）</strong>
         <button class="ghost" id="btnCloseEditor">关闭</button>
       </div>
       <label>UID</label>
       <input id="fUid" readonly>
       <label>名字</label>
-      <input id="fName" placeholder="她平时怎么叫他">
+      <input id="fName" readonly>
       <label>别名（逗号分隔）</label>
-      <input id="fAlias" placeholder="老公,哥哥">
+      <input id="fAlias" readonly>
       <label>关系</label>
-      <input id="fRelation" placeholder="相恋 / 熟识 / 普通 / 抵触 / 仇恨">
+      <input id="fRelation" readonly>
       <label>备注</label>
-      <textarea id="fRemark" placeholder="特征、偏好、要注意的事"></textarea>
-      <div class="row" style="margin-top:10px">
-        <button class="primary" id="btnSaveProfile">保存</button>
-        <button class="ghost danger" id="btnDeleteProfile">删除这个人的全部数据</button>
-      </div>
-      <div class="hint">删除会连带清掉他的记忆、关系边和缓存，不可恢复。</div>
+      <textarea id="fRemark" readonly></textarea>
+      <div class="hint">画像由陪伴面板维护，这里只读；要改名字/关系请回陪伴面板。</div>
     </div>
 
     <div class="card" id="memories" hidden>
@@ -447,7 +443,7 @@ async function openProfile(uid) {
     const p = data.profile || {};
     currentBot = data.bot_id || "";
     document.getElementById("editor").hidden = false;
-    document.getElementById("editorTitle").textContent = "编辑画像 · " + (p.name || uid);
+    document.getElementById("editorTitle").textContent = "人物画像（只读）· " + (p.name || uid);
     document.getElementById("fUid").value = uid;
     document.getElementById("fName").value = p.name || "";
     document.getElementById("fAlias").value = p.alias || "";
@@ -489,36 +485,6 @@ function renderMemories(items) {
     box.appendChild(row);
   });
 }
-
-document.getElementById("btnSaveProfile").addEventListener("click", async () => {
-  try {
-    await call("profile/save", {
-      uid: currentUid,
-      bot_id: currentBot,
-      name: document.getElementById("fName").value,
-      alias: document.getElementById("fAlias").value,
-      relation: document.getElementById("fRelation").value,
-      remark: document.getElementById("fRemark").value,
-    });
-    toast("已保存");
-    loadProfiles();
-    loadStatus();
-  } catch (error) { toast("保存失败：" + error.message, true); }
-});
-
-document.getElementById("btnDeleteProfile").addEventListener("click", async () => {
-  if (!currentUid) return;
-  if (!window.confirm("删除 " + currentUid + " 的画像、记忆、关系边？不可恢复。")) return;
-  try {
-    await call("profile/delete", { uid: currentUid, bot_id: currentBot, confirm: 1 });
-    toast("已删除");
-    document.getElementById("editor").hidden = true;
-    document.getElementById("memories").hidden = true;
-    currentUid = "";
-    loadProfiles();
-    loadStatus();
-  } catch (error) { toast("删除失败：" + error.message, true); }
-});
 
 document.getElementById("btnCloseEditor").addEventListener("click", () => {
   document.getElementById("editor").hidden = true;
