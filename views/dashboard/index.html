@@ -682,168 +682,296 @@ const REL_COLORS = {
   同学: "#c9a24d", 熟人: "#9b8fd0", 陌生人: "#9aa0a6", 仇人: "#c0504d",
 };
 let graphState = null;
+let __graphHover = "";
+let graphRaf = 0;
+const graphCamera = { yaw: 0.35, pitch: -0.2, distance: 0, auto: true };
 
 function relColor(relation) {
   return REL_COLORS[relation] || "#9aa0a6";
 }
 
-function buildGraph(items) {
-  const nodes = new Map();
-  const edges = [];
-  items.forEach((edge) => {
-    const a = String(edge.a_uid || "");
-    const b = String(edge.b_uid || "");
-    if (!a || !b) return;
-    if (!nodes.has(a)) nodes.set(a, { id: a, name: edge.a_name || a, x: 0, y: 0, vx: 0, vy: 0 });
-    if (!nodes.has(b)) nodes.set(b, { id: b, name: edge.b_name || b, x: 0, y: 0, vx: 0, vy: 0 });
-    edges.push({ a, b, relation: edge.relation || "朋友" });
-  });
-  const list = [...nodes.values()];
-  const radius = Math.min(160, 40 + list.length * 6);
-  list.forEach((node, index) => {
-    const angle = (index / Math.max(1, list.length)) * Math.PI * 2;
-    node.x = Math.cos(angle) * radius;
-    node.y = Math.sin(angle) * radius;
-  });
-  return { nodes: list, edges, index: nodes };
-}
+  const REL_RANK = { 家人: 5, 恋人: 6, 朋友: 4, 同事: 3, 同学: 3, 熟人: 2, 陌生人: 1, 仇人: 4 };
 
-function stepGraph(graph, width, height) {
-  const centerX = width / 2, centerY = height / 2;
-  const nodes = graph.nodes;
-  for (let i = 0; i < nodes.length; i += 1) {
-    const a = nodes[i];
-    for (let j = i + 1; j < nodes.length; j += 1) {
-      const b = nodes[j];
-      let dx = a.x - b.x, dy = a.y - b.y;
-      let dist = Math.hypot(dx, dy) || 0.01;
-      const force = Math.min(1600, 9000 / (dist * dist));
-      const fx = (dx / dist) * force, fy = (dy / dist) * force;
-      a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
-    }
-    // 往中心收一点，避免飞出去
-    a.vx += (centerX - a.x) * 0.012;
-    a.vy += (centerY - a.y) * 0.012;
+  function buildGraph(edges) {
+    const nodes = new Map();
+    const links = [];
+    edges.forEach((edge) => {
+      const a = String(edge.a_uid || "");
+      const b = String(edge.b_uid || "");
+      if (!a || !b) return;
+      if (!nodes.has(a)) nodes.set(a, { id: a, name: edge.a_name || a, relation: "", degree: 0 });
+      if (!nodes.has(b)) nodes.set(b, { id: b, name: edge.b_name || b, relation: "", degree: 0 });
+      const relation = edge.relation || "朋友";
+      links.push({ a, b, relation });
+      const rank = REL_RANK[relation] || 3;
+      [a, b].forEach((id) => {
+        const node = nodes.get(id);
+        node.degree += 1;
+        if (rank > (REL_RANK[node.relation] || 0)) node.relation = relation;
+      });
+    });
+    // 球面均匀撒点，再跑 3D 力导向，先长成“一团脑子”的基础形状
+    const list = [...nodes.values()];
+    const golden = Math.PI * (3 - Math.sqrt(5));
+    const shell = 70 + Math.min(110, list.length * 1.1);
+    list.forEach((node, i) => {
+      const y = 1 - (i / Math.max(1, list.length - 1)) * 2;
+      const ring = Math.sqrt(Math.max(0, 1 - y * y));
+      const theta = golden * i;
+      node.x = Math.cos(theta) * ring * shell;
+      node.y = y * shell;
+      node.z = Math.sin(theta) * ring * shell;
+      node.vx = 0; node.vy = 0; node.vz = 0;
+    });
+    return { nodes: list, links, index: nodes, radius: shell };
   }
-  graph.edges.forEach((edge) => {
-    const a = graph.index.get(edge.a), b = graph.index.get(edge.b);
-    if (!a || !b) return;
-    const dx = b.x - a.x, dy = b.y - a.y;
-    const dist = Math.hypot(dx, dy) || 0.01;
-    const force = (dist - 90) * 0.02;
-    const fx = (dx / dist) * force, fy = (dy / dist) * force;
-    a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
-  });
-  nodes.forEach((node) => {
-    if (node.dragging) return;
-    node.vx *= 0.82; node.vy *= 0.82;
-    node.x += node.vx; node.y += node.vy;
-    node.x = Math.max(24, Math.min(width - 24, node.x));
-    node.y = Math.max(24, Math.min(height - 24, node.y));
-  });
-}
 
-function drawGraph(ctx, graph, width, height, activeId) {
-  ctx.clearRect(0, 0, width, height);
-  graph.edges.forEach((edge) => {
-    const a = graph.index.get(edge.a), b = graph.index.get(edge.b);
-    if (!a || !b) return;
-    ctx.strokeStyle = relColor(edge.relation);
-    ctx.globalAlpha = activeId && (edge.a === activeId || edge.b === activeId) ? 0.95 : 0.35;
-    ctx.lineWidth = activeId && (edge.a === activeId || edge.b === activeId) ? 2.2 : 1.2;
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-  });
-  ctx.globalAlpha = 1;
-  graph.nodes.forEach((node) => {
-    const active = node.id === activeId;
-    ctx.beginPath();
-    ctx.fillStyle = active ? "#e06a9a" : "#fff";
-    ctx.strokeStyle = active ? "#e06a9a" : "#c9b8d4";
-    ctx.lineWidth = active ? 2.5 : 1.5;
-    ctx.arc(node.x, node.y, active ? 9 : 7, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = "#4a3f52";
+  function settleGraph(graph, iterations) {
+    const nodes = graph.nodes;
+    const n = nodes.length;
+    for (let step = 0; step < iterations; step += 1) {
+      for (let i = 0; i < n; i += 1) {
+        const a = nodes[i];
+        for (let j = i + 1; j < n; j += 1) {
+          const b = nodes[j];
+          let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+          const dist2 = dx * dx + dy * dy + dz * dz || 0.01;
+          const dist = Math.sqrt(dist2);
+          const force = Math.min(700, 900 / dist2);
+          dx /= dist; dy /= dist; dz /= dist;
+          a.vx += dx * force; a.vy += dy * force; a.vz += dz * force;
+          b.vx -= dx * force; b.vy -= dy * force; b.vz -= dz * force;
+        }
+      }
+      graph.links.forEach((link) => {
+        const a = graph.index.get(link.a), b = graph.index.get(link.b);
+        if (!a || !b) return;
+        let dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.01;
+        const force = (dist - 52) * 0.05;
+        dx /= dist; dy /= dist; dz /= dist;
+        a.vx += dx * force; a.vy += dy * force; a.vz += dz * force;
+        b.vx -= dx * force; b.vy -= dy * force; b.vz -= dz * force;
+      });
+      for (let i = 0; i < n; i += 1) {
+        const node = nodes[i];
+        node.vx -= node.x * 0.02; node.vy -= node.y * 0.02; node.vz -= node.z * 0.02;
+        node.vx *= 0.5; node.vy *= 0.5; node.vz *= 0.5;
+        node.x += node.vx; node.y += node.vy; node.z += node.vz;
+      }
+    }
+  }
+
+  function normalizeGraph(graph) {
+    let maxR = 0;
+    graph.nodes.forEach((node) => { maxR = Math.max(maxR, Math.hypot(node.x, node.y, node.z)); });
+    if (maxR > 0.01) {
+      const scale = 120 / maxR;
+      graph.nodes.forEach((node) => { node.x *= scale; node.y *= scale; node.z *= scale; });
+    }
+  }
+
+  function projectGraph(graph, camera, width, height) {
+    const cosY = Math.cos(camera.yaw), sinY = Math.sin(camera.yaw);
+    const cosP = Math.cos(camera.pitch), sinP = Math.sin(camera.pitch);
+    const focus = 760;
+    const center = focus + camera.distance;
+    graph.nodes.forEach((node) => {
+      const x1 = node.x * cosY - node.z * sinY;
+      const z1 = node.x * sinY + node.z * cosY;
+      const y1 = node.y * cosP - z1 * sinP;
+      const z2 = node.y * sinP + z1 * cosP;
+      const t = focus / Math.max(180, center + z2);
+      node.px = width / 2 + x1 * t;
+      node.py = height / 2 + y1 * t;
+      node.pscale = t;
+      node.pdepth = z2;
+    });
+  }
+
+  function drawGraph(ctx, graph, width, height, camera, hoverId) {
+    ctx.clearRect(0, 0, width, height);
+    const halo = ctx.createRadialGradient(width / 2, height / 2, 8, width / 2, height / 2, Math.max(width, height) * 0.55);
+    halo.addColorStop(0, "rgba(224,106,154,0.06)");
+    halo.addColorStop(1, "rgba(224,106,154,0)");
+    ctx.fillStyle = halo;
+    ctx.fillRect(0, 0, width, height);
+
+    projectGraph(graph, camera, width, height);
+    const activeId = hoverId || __graphActive;
+    const ordered = graph.nodes.slice().sort((a, b) => b.pdepth - a.pdepth);
+
+    // 远的线更淡，近的更亮，转起来才有深度
+    graph.links.forEach((link) => {
+      const a = graph.index.get(link.a), b = graph.index.get(link.b);
+      if (!a || !b) return;
+      const depth = (a.pdepth + b.pdepth) / 2;
+      const near = activeId && (link.a === activeId || link.b === activeId);
+      const base = 0.05 + 0.2 * (1 - Math.min(1, Math.max(0, (depth + 180) / 360)));
+      ctx.strokeStyle = relColor(link.relation);
+      ctx.globalAlpha = near ? 0.9 : base;
+      ctx.lineWidth = near ? 1.8 : 0.8;
+      ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+
+    // 节点带一点辉光，像神经元
+    ordered.forEach((node) => {
+      const active = node.id === activeId;
+      const scale = Math.max(0.45, node.pscale);
+      const radius = (active ? 9 : node.id === "bot" ? 7.5 : 5.5) * scale;
+      const color = node.id === "bot" ? "#e06a9a" : relColor(node.relation);
+      const glow = ctx.createRadialGradient(node.px, node.py, 0, node.px, node.py, radius * 3.4);
+      glow.addColorStop(0, color);
+      glow.addColorStop(0.35, color);
+      glow.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.globalAlpha = active ? 0.6 : 0.32;
+      ctx.fillStyle = glow;
+      ctx.beginPath(); ctx.arc(node.px, node.py, radius * 3.4, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.fillStyle = active ? "#e06a9a" : "#fff";
+      ctx.strokeStyle = color;
+      ctx.lineWidth = active ? 2.2 : 1.2;
+      ctx.arc(node.px, node.py, radius, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+    });
+
+    // 标签只给关键的：bot、悬停的、以及关系最近/连接最多的十几个
+    const labelNodes = ordered.filter((node) => node.id === "bot" || node.id === activeId)
+      .concat(ordered.filter((node) => node.id !== "bot" && node.id !== activeId)
+        .sort((a, b) => (REL_RANK[b.relation] || 0) - (REL_RANK[a.relation] || 0) || b.degree - a.degree)
+        .slice(0, 12));
     ctx.font = "11px system-ui, sans-serif";
     ctx.textAlign = "center";
-    const label = node.name.length > 8 ? node.name.slice(0, 8) + "…" : node.name;
-    ctx.fillText(label, node.x, node.y + 20);
-  });
-}
-
-function renderGraph(items) {
-  const canvas = document.getElementById("relGraph");
-  if (!canvas) return;
-  const wrap = canvas.parentElement;
-  const width = canvas.clientWidth || (wrap.clientWidth - 24);
-  const height = canvas.clientHeight || 320;
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = width * dpr;
-  canvas.height = height * dpr;
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const graph = buildGraph(items);
-  graphState = graph;
-  if (!graph.nodes.length) {
-    ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = "#9a8fa3";
-    ctx.font = "12px system-ui, sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText("还没有关系，先加一条或让陪伴自己记", width / 2, height / 2);
-    return;
+    labelNodes.forEach((node) => {
+      const label = node.name.length > 8 ? node.name.slice(0, 8) + "…" : node.name;
+      ctx.globalAlpha = node.id === activeId || node.id === "bot" ? 1 : 0.72;
+      ctx.fillStyle = "#4a3f52";
+      ctx.fillText(label, node.px, node.py + 18 * Math.max(0.6, node.pscale));
+    });
+    ctx.globalAlpha = 1;
   }
-  for (let i = 0; i < 220; i += 1) stepGraph(graph, width, height);
-  const activeId = window.__graphActive || "";
-  drawGraph(ctx, graph, width, height, activeId);
 
-  const legend = document.getElementById("relLegend");
-  const kinds = [...new Set(graph.edges.map((edge) => edge.relation))];
-  legend.innerHTML = kinds.map((kind) =>
-    '<span style="display:inline-block;margin-right:10px"><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' +
-    relColor(kind) + ';margin-right:4px"></i>' + kind + "</span>").join("");
-  legend.innerHTML += '<span style="color:#9a8fa3">拖动节点可调整布局</span>';
+  function renderGraph(edges) {
+    const canvas = document.getElementById("relGraph");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const graph = buildGraph(edges);
+    graphState = graph;
+    const legend = document.getElementById("relLegend");
+    if (!graph.nodes.length) {
+      if (graphRaf) { cancelAnimationFrame(graphRaf); graphRaf = 0; }
+      canvas.width = Math.max(1, canvas.clientWidth);
+      canvas.height = Math.max(1, canvas.clientHeight);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#9a8fa3";
+      ctx.font = "12px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("还没有关系，先加一条或让陪伴自己记", canvas.clientWidth / 2, canvas.clientHeight / 2);
+      if (legend) legend.textContent = "";
+      return;
+    }
+    // 节点多的时候少跑几轮，打开面板别卡住
+    const iterations = graph.nodes.length > 400 ? 40 : (graph.nodes.length > 220 ? 90 : 180);
+    settleGraph(graph, iterations);
+    normalizeGraph(graph);
 
-  canvas.style.touchAction = "none";
-  canvas.style.cursor = "grab";
-  const pointOf = (ev) => {
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: (ev.clientX - rect.left) * (width / Math.max(1, rect.width)),
-      y: (ev.clientY - rect.top) * (height / Math.max(1, rect.height)),
+    if (legend) {
+      const kinds = [...new Set(graph.links.map((link) => link.relation))];
+      legend.innerHTML = kinds.map((kind) =>
+        '<span style="display:inline-block;margin-right:10px"><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' +
+        relColor(kind) + ';margin-right:4px"></i>' + kind + "</span>").join("") +
+        '<span style="color:#9a8fa3">拖动旋转 · 滚轮缩放 · 双击回正</span>';
+    }
+
+    let width = 0, height = 0, dpr = 1;
+    const fit = () => {
+      const w = canvas.clientWidth || (canvas.parentElement.clientWidth - 28);
+      const h = canvas.clientHeight || 340;
+      dpr = window.devicePixelRatio || 1;
+      if (w !== width || h !== height) {
+        width = w; height = h;
+        canvas.width = Math.max(1, Math.round(w * dpr));
+        canvas.height = Math.max(1, Math.round(h * dpr));
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
-  };
-  canvas.onpointerdown = (event) => {
-    const point = pointOf(event);
-    const hit = graph.nodes.find((node) => Math.hypot(node.x - point.x, node.y - point.y) < 20);
-    if (!hit) return;
-    event.preventDefault();
-    try { canvas.setPointerCapture(event.pointerId); } catch (err) {}
-    canvas.style.cursor = "grabbing";
-    hit.dragging = true;
-    window.__graphActive = hit.id;
-    const offsetX = hit.x - point.x, offsetY = hit.y - point.y;
-    const move = (ev) => {
-      const p = pointOf(ev);
-      hit.x = Math.max(18, Math.min(width - 18, p.x + offsetX));
-      hit.y = Math.max(18, Math.min(height - 18, p.y + offsetY));
-      stepGraph(graph, width, height);
-      drawGraph(ctx, graph, width, height, hit.id);
+
+    if (graphRaf) cancelAnimationFrame(graphRaf);
+    let lastDraw = 0;
+    const frame = (now) => {
+      if (!canvas.isConnected) return;
+      fit();
+      if (width <= 0) { graphRaf = requestAnimationFrame(frame); return; }
+      if (graphCamera.auto && !canvas.__brainDragging) graphCamera.yaw += 0.0016;
+      lastDraw = now || 0;
+      // 30fps 就够了，节点多的时候别把主线程拖死
+      if (!lastDraw || lastDraw - (canvas.__brainLast || 0) >= 32) {
+        canvas.__brainLast = lastDraw;
+        drawGraph(ctx, graph, width, height, graphCamera, __graphHover);
+      }
+      graphRaf = requestAnimationFrame(frame);
     };
-    const up = () => {
-      hit.dragging = false;
+
+    // 拖动 = 旋转整团神经网；滚轮缩放；双击回正
+    canvas.style.touchAction = "none";
+    canvas.style.cursor = "grab";
+    canvas.__brainDragging = false;
+    let lastX = 0, lastY = 0;
+    const pick = (event) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = (event.clientX - rect.left) * (width / Math.max(1, rect.width));
+      const my = (event.clientY - rect.top) * (height / Math.max(1, rect.height));
+      let best = null, bestDist = 20;
+      graph.nodes.forEach((node) => {
+        const dist = Math.hypot(node.px - mx, node.py - my);
+        if (dist < bestDist) { bestDist = dist; best = node; }
+      });
+      return best;
+    };
+    canvas.onpointerdown = (event) => {
+      event.preventDefault();
+      if (canvas.__brainIdle) clearTimeout(canvas.__brainIdle);
+      canvas.__brainDragging = true;
+      canvas.style.cursor = "grabbing";
+      graphCamera.auto = false;
+      lastX = event.clientX; lastY = event.clientY;
+      try { canvas.setPointerCapture(event.pointerId); } catch (err) {}
+    };
+    canvas.onpointermove = (event) => {
+      if (canvas.__brainDragging) {
+        graphCamera.yaw += (event.clientX - lastX) * 0.009;
+        graphCamera.pitch += (event.clientY - lastY) * 0.007;
+        graphCamera.pitch = Math.max(-1.25, Math.min(1.25, graphCamera.pitch));
+        lastX = event.clientX; lastY = event.clientY;
+        return;
+      }
+      const hit = pick(event);
+      __graphHover = hit ? hit.id : "";
+      canvas.style.cursor = hit ? "pointer" : "grab";
+    };
+    const endDrag = () => {
+      if (!canvas.__brainDragging) return;
+      canvas.__brainDragging = false;
       canvas.style.cursor = "grab";
-      canvas.onpointermove = null;
-      canvas.onpointerup = null;
-      canvas.onpointercancel = null;
+      canvas.__brainIdle = setTimeout(() => { graphCamera.auto = true; }, 4000);
     };
-    canvas.onpointermove = move;
-    canvas.onpointerup = up;
-    canvas.onpointercancel = up;
-  };
-}
+    canvas.onpointerup = endDrag;
+    canvas.onpointercancel = endDrag;
+    canvas.onpointerleave = () => { __graphHover = ""; };
+    canvas.onwheel = (event) => {
+      event.preventDefault();
+      graphCamera.distance = Math.max(-220, Math.min(500, graphCamera.distance + event.deltaY * 0.4));
+    };
+    canvas.ondblclick = () => {
+      graphCamera.yaw = 0.35; graphCamera.pitch = -0.2; graphCamera.distance = 0;
+      graphCamera.auto = true;
+    };
+
+    frame();
+  }
+
 
 /* ---------- 关系网 ---------- */
 async function loadRelations() {
