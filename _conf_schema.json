@@ -45,6 +45,18 @@
     "hint": "先粗筛这么多条再精排；库比池子小的时候会自动全量精排，所以默认 400 够用。",
     "default": 400
   },
+  "recall_fts_enabled": {
+    "type": "bool",
+    "description": "用 FTS5 trigram 加速记忆召回",
+    "hint": ">=3 个字的查询走全文索引，2 个字仍走 LIKE；SQLite 不支持时自动退回，不影响结果。实测 6k 条时 LIKE+分层池已经够快，这里默认关，记忆到几万条再开。",
+    "default": false
+  },
+  "recall_recent_pool": {
+    "type": "int",
+    "description": "「最近活跃」候选条数",
+    "hint": "和关键词命中那一路合并成候选池；600 在几千条记忆时够用，调大更全但更慢。",
+    "default": 600
+  },
   "recall_min_matched_terms": {
     "type": "int",
     "description": "最少命中几个关键词",

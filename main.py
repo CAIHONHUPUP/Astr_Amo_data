@@ -200,10 +200,12 @@ class MemoryAPI:
             return False
 
     async def add_message(self, bot_id: str, umo: str, uid: str = "", name: str = "",
-                           role: str = "user", content: str = "", platform: str = "") -> int:
+                           role: str = "user", content: str = "", platform: str = "",
+                           message_id: str = "") -> int:
         try:
             return self._store.add_message(
-                self._bot(bot_id), umo, uid, name, role, content, platform=platform
+                self._bot(bot_id), umo, uid, name, role, content,
+                platform=platform, message_id=message_id,
             )
         except Exception as exc:
             logger.debug("[amo_data] 写聊天记录失败: %s" % exc)
@@ -522,6 +524,8 @@ class AmoDataPlugin(Star):
         """把面板配置翻译成 DataStore 的检索参数（缺的用默认值）。"""
         return {
             "pool_size": self._cfg_int("recall_pool_size", 400),
+            "recall_fts_enabled": self._cfg_bool("recall_fts_enabled", False),
+            "recall_recent_pool": self._cfg_int("recall_recent_pool", 600),
             "min_matched_terms": self._cfg_int("recall_min_matched_terms", 1),
             "forget_half_life_days": self._cfg_float("recall_half_life_days", 45.0),
             "importance_decay": self._cfg_float("recall_importance_decay", 0.10),

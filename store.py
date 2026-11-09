@@ -28,6 +28,13 @@ import urllib.request
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+try:
+    from astrbot.api import logger
+except Exception:  # 单测/纯逻辑场景允许脱离 AstrBot 运行
+    import logging
+
+    logger = logging.getLogger("amo_data")
+
 
 def _now() -> int:
     return int(time.time())
@@ -139,6 +146,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "diversify_ratio": 0.75,        # 注入时同一件事只留一条（0=关闭多样化）
     "embedding_backfill": True,        # 启动时给旧记忆补向量
     "embedding_backfill_limit": 200,   # 每次最多补多少条
+    "recall_fts_enabled": False,       # 可选：FTS5 trigram 子串粗筛（默认关，见 CHANGELOG 实测）
+    "recall_recent_pool": 600,         # 「最近活跃」这一层的上限，库大了不至于把几条热门记忆全捞进来
 }
 
 
@@ -441,9 +450,11 @@ class DataStore:
                     role TEXT DEFAULT 'user',
                     content TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
-                    compressed INTEGER DEFAULT 0
+                    compressed INTEGER DEFAULT 0,
+                    message_id TEXT DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS idx_msg_scan ON messages(bot_id, umo, created_at);
+                -- idx_msg_mid 在 _migrate_columns 里建：老库还没有 message_id 列
 
                 CREATE TABLE IF NOT EXISTS logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -506,6 +517,72 @@ class DataStore:
             )
             self._migrate_columns()
             conn.commit()
+        self._init_trigram_fts()
+
+    def _init_trigram_fts(self) -> None:
+        """建一个 trigram FTS5 表做子串粗筛；SQLite 不支持时自动停用。
+
+        memories_fts（unicode61）对中文没用——整段中文会被当成一个 token，
+        所以之前虽然建了表却从没被查询过。trigram 才能按「>=3 个字」做子串匹配，
+        用来替代大表上的 `content LIKE '%查询%'` 全表扫；2 个字以下的查询仍走 LIKE。
+        """
+        self._fts_tri = False
+        if not self.setting("recall_fts_enabled", False):
+            return
+        try:
+            with self.lock:
+                conn = self.conn
+                conn.execute(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS memories_ftst USING fts5("
+                    "content, content='memories', content_rowid='id', tokenize='trigram')"
+                )
+                conn.executescript(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS memt_ai AFTER INSERT ON memories BEGIN
+                        INSERT INTO memories_ftst(rowid, content) VALUES (new.id, new.content);
+                    END;
+                    CREATE TRIGGER IF NOT EXISTS memt_ad AFTER DELETE ON memories BEGIN
+                        DELETE FROM memories_ftst WHERE rowid = old.id;
+                    END;
+                    CREATE TRIGGER IF NOT EXISTS memt_au AFTER UPDATE OF content ON memories BEGIN
+                        INSERT INTO memories_ftst(memories_ftst, rowid, content)
+                            VALUES('delete', old.id, old.content);
+                        INSERT INTO memories_ftst(rowid, content) VALUES (new.id, new.content);
+                    END;
+                    CREATE TABLE IF NOT EXISTS store_meta(
+                        key TEXT PRIMARY KEY, value TEXT DEFAULT ''
+                    );
+                    """
+                )
+                # 影子表的行数不等于「建了索引的文档数」（trigram 表有固定头部行），
+                # 所以用 store_meta 记「上次 rebuild 时 memories 有多少条」来判断是否要重建。
+                total = int(conn.execute("SELECT COUNT(*) AS n FROM memories").fetchone()["n"])
+                row = conn.execute(
+                    "SELECT value FROM store_meta WHERE key='fts_tri_rows'"
+                ).fetchone()
+                try:
+                    built = int(row["value"]) if row else -1
+                except (TypeError, ValueError):
+                    built = -1
+                rebuilt = built != total
+                if rebuilt:
+                    conn.execute("INSERT INTO memories_ftst(memories_ftst) VALUES('rebuild')")
+                    conn.execute(
+                        "INSERT INTO store_meta(key, value) VALUES('fts_tri_rows', ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (str(total),),
+                    )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_mem_recall ON memories("
+                    "bot_id, uid, status, last_hit_at)"
+                )
+                conn.commit()
+                self._fts_tri = True
+                if rebuilt:
+                    logger.info("[amo_data] trigram 索引已重建：%d 条记忆" % total)
+        except Exception as exc:
+            self._fts_tri = False
+            logger.warning("[amo_data] trigram 索引不可用，召回退回 LIKE 全表扫: %s" % exc)
 
     def _migrate_columns(self) -> None:
         """老库补列：messages 增加 platform / pid。"""
@@ -518,6 +595,7 @@ class DataStore:
             for column, ddl in (
                 ("platform", "ALTER TABLE messages ADD COLUMN platform TEXT DEFAULT ''"),
                 ("pid", "ALTER TABLE messages ADD COLUMN pid INTEGER DEFAULT 0"),
+                ("message_id", "ALTER TABLE messages ADD COLUMN message_id TEXT DEFAULT ''"),
             ):
                 if column in cols:
                     continue
@@ -528,6 +606,7 @@ class DataStore:
                     continue
             try:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_pid ON messages(bot_id, pid, created_at)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_mid ON messages(bot_id, message_id)")
             except Exception:
                 pass
             # 记忆表补列：近重复合并计数（老库自动补，不需要重建表）
@@ -1511,6 +1590,30 @@ class DataStore:
         return {"merged_summaries": merged, "merged_near_duplicates": dedup,
                 "applied": bool(apply)}
 
+    def _substring_candidates(self, base, params, text, limit):
+        """trigram FTS 子串粗筛；不可用/查询太短时返回 None（调用方退回 LIKE）。"""
+        if not getattr(self, "_fts_tri", False) or len(text) < 3:
+            return None
+        phrase = '"' + str(text).replace('"', '""') + '"'
+        try:
+            with self.lock:
+                hits = self.conn.execute(
+                    "SELECT rowid FROM memories_ftst WHERE memories_ftst MATCH ? LIMIT ?",
+                    (phrase, int(limit) * 2),
+                ).fetchall()
+                if not hits:
+                    return None
+                ids = [int(row["rowid"]) for row in hits]
+                marks = ",".join("?" for _ in ids)
+                return self.conn.execute(
+                    base + " AND id IN (%s) ORDER BY last_hit_at DESC, created_at DESC LIMIT ?" % marks,
+                    list(params) + ids + [int(limit)],
+                ).fetchall()
+        except Exception as exc:
+            logger.debug("[amo_data] trigram 粗筛失败，退回 LIKE: %s" % exc)
+            self._fts_tri = False
+            return None
+
     def recall(
         self,
         bot_id: str,
@@ -1575,19 +1678,24 @@ class DataStore:
             params.append(str(group_id))
 
         rows: List[sqlite3.Row] = []
-        # 粗筛 1：子串命中（短词靠这条兜底）
+        # 粗筛 1：子串命中。>=3 个字时用 trigram FTS（避免全表 LIKE），否则/没命中时退回 LIKE。
         if text:
-            with self.lock:
-                rows = self.conn.execute(
-                    base + " AND content LIKE ? ORDER BY last_hit_at DESC, created_at DESC LIMIT ?",
-                    params + ["%" + text + "%", pool_size],
-                ).fetchall()
-        # 粗筛 2：补最近活跃的，保证词序不同的记忆（「上班」vs「上夜班」）也有候选
+            rows = self._substring_candidates(base, params, text, pool_size)
+            if rows is None:
+                with self.lock:
+                    rows = self.conn.execute(
+                        base + " AND content LIKE ? ORDER BY last_hit_at DESC, created_at DESC LIMIT ?",
+                        params + ["%" + text + "%", pool_size],
+                    ).fetchall()
+        # 粗筛 2：补最近活跃的，保证词序不同的记忆（「上班」vs「上夜班」）也有候选。
+        # 这一层单独限流：库涨到几千条以后，按 last_hit_at 排的前 4000 条几乎全是常聊话题，
+        # 会把真正相关但很久没被想起的记忆挤出候选池，也白算 BM25。
+        recent_pool = max(limit, min(int(self.setting("recall_recent_pool", 600) or 600), 4000))
         with self.lock:
             seen = {int(r["id"]) for r in rows}
             more = self.conn.execute(
                 base + " ORDER BY last_hit_at DESC, created_at DESC LIMIT ?",
-                params + [pool_size],
+                params + [recent_pool],
             ).fetchall()
         rows.extend([r for r in more if int(r["id"]) not in seen])
 
@@ -1785,7 +1893,7 @@ class DataStore:
     # ---------- 聊天记录 ----------
     def add_message(self, bot_id: str, umo: str, uid: str = "", name: str = "",
                     role: str = "user", content: str = "", platform: str = "",
-                    created_at: int = 0) -> int:
+                    created_at: int = 0, message_id: str = "") -> int:
         text = _clean(content, 4000)
         if not text:
             return 0
@@ -1801,20 +1909,30 @@ class DataStore:
                 pid = self.resolve_person(bot_id, platform, uid, name)
             except Exception:
                 pid = 0
+        mid = _clean(str(message_id or "").strip(), 128)
         with self.lock:
-            # 平台重连/机器人回声会把同一句话重复推过来：10 秒内完全相同的只留一条
-            dup = self.conn.execute(
-                "SELECT id FROM messages WHERE bot_id=? AND umo=? AND uid=? AND role=? "
-                "AND content=? AND created_at>=? ORDER BY id DESC LIMIT 1",
-                (str(bot_id), str(umo), str(uid), role_n, text, ts - 10),
-            ).fetchone()
-            if dup:
-                return int(dup["id"] or 0)
+            # 平台消息 id 是去重的最强证据：重连/回调重放时同一个 message_id 一定只落一条
+            if mid:
+                dup = self.conn.execute(
+                    "SELECT id FROM messages WHERE bot_id=? AND message_id=? ORDER BY id DESC LIMIT 1",
+                    (str(bot_id), mid),
+                ).fetchone()
+                if dup:
+                    return int(dup["id"] or 0)
+            # 没有 message_id 时退回旧逻辑：10 秒内完全相同的只留一条
+            if not mid:
+                dup = self.conn.execute(
+                    "SELECT id FROM messages WHERE bot_id=? AND umo=? AND uid=? AND role=? "
+                    "AND content=? AND created_at>=? ORDER BY id DESC LIMIT 1",
+                    (str(bot_id), str(umo), str(uid), role_n, text, ts - 10),
+                ).fetchone()
+                if dup:
+                    return int(dup["id"] or 0)
             cur = self.conn.execute(
-                "INSERT INTO messages(bot_id, umo, uid, name, role, content, created_at, platform, pid) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO messages(bot_id, umo, uid, name, role, content, created_at, platform, pid, message_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (str(bot_id), str(umo), str(uid), _clean(name, 64),
-                 role_n, text, ts, platform, pid),
+                 role_n, text, ts, platform, pid, mid),
             )
             self.conn.commit()
             return int(cur.lastrowid or 0)
