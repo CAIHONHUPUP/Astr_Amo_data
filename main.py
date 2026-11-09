@@ -48,7 +48,7 @@ except ImportError:  # 单文件加载时的兜底
     from store import DataStore  # type: ignore
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.3.6"
+PLUGIN_VERSION = "2.3.8"
 DEFAULT_BOT_ID = "default"
 
 

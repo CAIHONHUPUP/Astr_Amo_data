@@ -145,13 +145,17 @@ def _bm25_scores(q_tokens: List[str], docs: List[List[str]], k1: float = 1.4,
 
 
 def _freshness(ts: Any, now: int, half_life_days: float) -> float:
-    """遗忘曲线：0.5 ** (age/half_life)。未来的时间按 1 处理。"""
+    """遗忘曲线：0.5 ** (age/half_life)。未来的时间按 1 处理。
+
+    导入的老记忆可能没有时间戳（stamp<=0），这时给中性值 0.5：
+    既不能当成「刚刚发生」抢排位，也不能一路沉底。
+    """
     try:
         stamp = float(ts or 0)
     except (TypeError, ValueError):
         stamp = 0.0
     if stamp <= 0:
-        return 1.0
+        return 0.5
     age_days = max(0.0, (now - stamp) / 86400.0)
     hl = max(1.0, float(half_life_days or RECALL_HALF_LIFE_DAYS))
     return 0.5 ** (age_days / hl)
@@ -838,9 +842,12 @@ class DataStore:
             "FROM memories WHERE bot_id=? AND uid=?"
         )
         params: List[Any] = [bot_id, uid]
-        if scope in ("private", "group"):
-            base += " AND scope=?"
-            params.append(scope)
+        if scope == "private":
+            # 老数据/导入数据的 scope 可能是空、global、shared：它们不绑定群，
+            # 私聊召回必须能看到，否则「以前的数据放进来了却读不到」。
+            base += " AND (scope='private' OR scope='' OR scope='global' OR scope='shared')"
+        elif scope == "group":
+            base += " AND scope='group'"
         if group_id:
             base += " AND group_id=?"
             params.append(str(group_id))
@@ -861,6 +868,15 @@ class DataStore:
                 params + [pool_size],
             ).fetchall()
         rows.extend([r for r in more if int(r["id"]) not in seen])
+        # 粗筛 3：按 id 再补一批，保证导入的老记忆（created_at/last_hit_at 都是 0）
+        # 不会因为「按时间排序」被永远挤出候选池 —— 这正是旧数据搜不到的主因。
+        with self.lock:
+            seen = {int(r["id"]) for r in rows}
+            legacy = self.conn.execute(
+                base + " ORDER BY id DESC LIMIT ?",
+                params + [pool_size],
+            ).fetchall()
+        rows.extend([r for r in legacy if int(r["id"]) not in seen])
 
         if not rows:
             return []
@@ -903,7 +919,17 @@ class DataStore:
             scored.append(item)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        items = scored[:limit]
+        # 内容去重：导入数据可能有重复条目，别让它们白占 limit
+        items = []
+        seen_content = set()
+        for item in scored:
+            key = re.sub(r"[\s，。！？!?、；;：:]+", "", str(item.get("content") or "")).lower()
+            if key and key in seen_content:
+                continue
+            seen_content.add(key)
+            items.append(item)
+            if len(items) >= limit:
+                break
 
         if items:
             with self.lock:
