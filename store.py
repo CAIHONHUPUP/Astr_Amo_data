@@ -286,20 +286,27 @@ def _bm25_scores(q_tokens: List[str], docs: List[List[str]], k1: float = 1.4,
 
 
 def _freshness(ts: Any, now: int, half_life_days: float) -> float:
-    """遗忘曲线：0.5 ** (age/half_life)。未来的时间按 1 处理。
-
-    导入的老记忆可能没有时间戳（stamp<=0），这时给中性值 0.5：
-    既不能当成「刚刚发生」抢排位，也不能一路沉底。
-    """
+    """遗忘曲线：0.5 ** (age/half_life)。未来的时间按 1 处理。"""
     try:
         stamp = float(ts or 0)
     except (TypeError, ValueError):
         stamp = 0.0
     if stamp <= 0:
-        return 0.5
+        return 1.0
     age_days = max(0.0, (now - stamp) / 86400.0)
     hl = max(1.0, float(half_life_days or RECALL_HALF_LIFE_DAYS))
     return 0.5 ** (age_days / hl)
+
+
+
+def _unique_labels(links) -> list:
+    """同一个人可能同时有 qq / aiocqhttp 两条链接，面板只显示一次 QQ。"""
+    out = []
+    for item in links or []:
+        label = str(item.get("label") or item.get("platform") or "")
+        if label and label not in out:
+            out.append(label)
+    return out
 
 
 class DataStore:
@@ -658,9 +665,17 @@ class DataStore:
                         )
                         self.conn.commit()
                     return pid
-            key = _name_key(display)
             target = 0
-            if auto_merge and len(key) >= 2:
+            # 同一个 uid 出现在别的平台（导入的飞书记录里 subject_id 还是 QQ 号）：
+            # 并到已有那个人，不另起一个「他」。
+            same = self.conn.execute(
+                "SELECT pid FROM person_links WHERE bot_id=? AND uid=? AND pid>0 LIMIT 1",
+                (bot_id, uid),
+            ).fetchone()
+            if same and int(same["pid"] or 0):
+                target = int(same["pid"])
+            key = _name_key(display)
+            if not target and auto_merge and len(key) >= 2:
                 rows = self.conn.execute(
                     "SELECT pid, name FROM person_links WHERE bot_id=? AND pid>0 AND platform!=?",
                     (bot_id, platform),
@@ -855,7 +870,7 @@ class DataStore:
                         (item["name"] for item in links if item["name"]), ""
                     ),
                     "links": links,
-                    "platforms": [item["label"] for item in links],
+                    "platforms": _unique_labels(links),
                     "msg_count": int(stats["c"] or 0) if stats else 0,
                     "last_at": int(stats["last"] or 0) if stats else 0,
                     "updated_at": int(row["updated_at"] or 0),
@@ -1453,12 +1468,9 @@ class DataStore:
             "FROM memories WHERE bot_id=? AND uid=? AND COALESCE(status,'active')='active'"
         )
         params: List[Any] = [bot_id, uid]
-        if scope == "private":
-            # 老数据/导入数据的 scope 可能是空、global、shared：它们不绑定群，
-            # 私聊召回必须能看到，否则「以前的数据放进来了却读不到」。
-            base += " AND (scope='private' OR scope='' OR scope='global' OR scope='shared')"
-        elif scope == "group":
-            base += " AND scope='group'"
+        if scope in ("private", "group"):
+            base += " AND scope=?"
+            params.append(scope)
         if group_id:
             base += " AND group_id=?"
             params.append(str(group_id))
@@ -1479,15 +1491,6 @@ class DataStore:
                 params + [pool_size],
             ).fetchall()
         rows.extend([r for r in more if int(r["id"]) not in seen])
-        # 粗筛 3：按 id 再补一批，保证导入的老记忆（created_at/last_hit_at 都是 0）
-        # 不会因为「按时间排序」被永远挤出候选池 —— 这正是旧数据搜不到的主因。
-        with self.lock:
-            seen = {int(r["id"]) for r in rows}
-            legacy = self.conn.execute(
-                base + " ORDER BY id DESC LIMIT ?",
-                params + [pool_size],
-            ).fetchall()
-        rows.extend([r for r in legacy if int(r["id"]) not in seen])
 
         if not rows:
             return []
@@ -1596,23 +1599,12 @@ class DataStore:
             scored.append(item)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        # 1) 内容去重：导入数据可能有重复条目，别让它们白占 limit
-        deduped = []
-        seen_content = set()
-        for item in scored:
-            key = re.sub(r"[\s，。！？!?、；;：:]+", "", str(item.get("content") or "")).lower()
-            if key and key in seen_content:
-                continue
-            seen_content.add(key)
-            deduped.append(item)
-            if len(deduped) >= max(limit * 3, limit):
-                break
-        # 2) 注入多样化：同一件事只留最相关的一条，避免 6 条记忆里 4 条在说同一件事
+        # 注入去重/多样化：同一件事只留最相关的一条，避免 6 条记忆里 4 条在说同一件事
         tokens_by_id = {int(row["id"]): set(docs[idx]) for idx, row in enumerate(rows)}
         div_ratio = float(self.setting("diversify_ratio", 0.75) or 0.0)
-        items = []
-        selected_tokens = []
-        for item in deduped:
+        items: List[Dict[str, Any]] = []
+        selected_tokens: List[set] = []
+        for item in scored:
             if len(items) >= limit:
                 break
             toks = tokens_by_id.get(int(item["id"]), set())

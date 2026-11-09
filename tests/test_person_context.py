@@ -51,6 +51,19 @@ class PersonContextTests(unittest.TestCase):
         self.assertTrue(any("飞书唯一一句" in m["content"] for m in ctx["recent"]))
         self.assertEqual([o["platform"] for o in ctx.get("others") or []], ["lark"])
 
+
+    def test_same_uid_on_other_platform_merges_automatically(self):
+        """导入的飞书记录里 subject_id 还是 QQ 号：应并到已有那个人，不新建「他」。"""
+        self._add("aiocqhttp", QQ_UID, "QQ上说了一句", 1_800_000_000)
+        # 飞书侧 uid 仍是 QQ 号（历史导入常见）
+        self.store.add_message(BOT, "lark:FriendMessage:" + QQ_UID, QQ_UID, "他", "user",
+                               "飞书上说了一句", created_at=1_800_000_100)
+        pid_qq = self.store.resolve_person(BOT, "aiocqhttp", QQ_UID)
+        pid_lark = self.store.resolve_person(BOT, "lark", QQ_UID)
+        self.assertEqual(pid_qq, pid_lark)
+        names = [p["name"] for p in self.store.list_persons(BOT)]
+        self.assertEqual(len(names), 1)
+
     def test_unknown_person_returns_empty(self):
         self.assertEqual(self.store.person_context(BOT, "aiocqhttp", "no-such-uid", 6), {})
 
