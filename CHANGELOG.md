@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.4.8
+
+### 仓库改名 Astrbot_Amo_data（插件 ID 不变）
+
+- GitHub 仓库 Astr_Amo_data → **Astrbot_Amo_data**，与陪伴插件命名保持一致；
+- `metadata.name` 仍是 **Astr_Amo_data**（插件 ID 不能跟着改，Cloud 按它识别、换绑保留历史）；
+- `metadata.repo`、README 里的仓库链接同步到新地址；GitHub 旧地址自动 301 跳转；
+- 已安装用户不受影响（插件按 ID 加载，更新走 GitHub 重定向）。
+
 ## 2.4.6
 
 ### 补齐时间回看 / 每日总结 / 里程碑接口
