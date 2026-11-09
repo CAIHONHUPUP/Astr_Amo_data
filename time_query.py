@@ -142,15 +142,17 @@ def parse_time_span(text: Any, now: Optional[datetime] = None) -> Optional[Dict[
 
     # ---- 5) 月 / 日 ----
     month = day = None
+    month_only = False
     match = re.search(r"(\d{1,2})\s*月\s*(?:(\d{1,2})\s*[号日])?", raw)
     if match:
         month = int(match.group(1))
         if match.group(2):
             day = int(match.group(2))
+        else:
+            month_only = True  # 「11月」= 整月，不是「今天这一天」
     elif re.search(r"(\d{1,2})\s*[号日]", raw) and not re.search(r"(\d{1,2})\s*点", raw):
         day = int(re.search(r"(\d{1,2})\s*[号日]", raw).group(1))
 
-    month_only = False
     if re.search(r"(上个月|上月)", raw):
         year = year or now.year
         month = (now.month - 2) % 12 + 1
@@ -162,6 +164,7 @@ def parse_time_span(text: Any, now: Optional[datetime] = None) -> Optional[Dict[
 
     # ---- 6) 具体小时 ----
     hour = None
+    hour_next_day = False
     match = re.search(r"(\d{1,2})\s*点\s*(半)?", raw)
     if match:
         hour = int(match.group(1)) % 24
@@ -172,11 +175,19 @@ def parse_time_span(text: Any, now: Optional[datetime] = None) -> Optional[Dict[
         if word in raw:
             tod = (word, start_h, end_h)
             break
-    if tod and hour is not None and hour <= 12 and tod[1] >= 11:
-        # 「晚上10点」= 22 点，「下午3点」= 15 点；凌晨/早上不动
-        hour = hour + 12
-        if hour >= 24:
-            hour -= 24
+    if tod and hour is not None and hour <= 12 and tod[1] >= 13:
+        # 「晚上10点」= 22 点，「下午3点」= 15 点；「中午12点」保持 12 点
+        shifted = hour + 12
+        if shifted < 24:
+            hour = shifted
+        elif tod[1] >= 19:
+            # 「晚上12点」= 当天 24:00 → 次日 0 点（原来的 %24 会变成当天 00:00）
+            hour = 0
+            hour_next_day = True
+        # 「下午12点」按中午 12 点算，不挪
+    if hour is not None and tod is not None and day_base is None and not year and not month and day is None:
+        # 只说了时段+几点（如「中午12点」）：默认今天
+        day_base = now
     if tod and hour is None and tod[1] <= now.hour < tod[2] and (day_base is None and not year and not month):
         # 只说"下午"没说是哪天：默认今天
         day_base = now
@@ -210,7 +221,7 @@ def parse_time_span(text: Any, now: Optional[datetime] = None) -> Optional[Dict[
 
     day_start, day_end = _day_range(target)
     if hour is not None:
-        start = day_start + timedelta(hours=hour)
+        start = day_start + timedelta(hours=hour, days=1 if hour_next_day else 0)
         return _span(start, start + timedelta(hours=1), "hour", raw, now,
                      year=target.year, month=target.month, day=target.day, hour=hour)
     if tod:
@@ -255,5 +266,15 @@ def describe_span(span: Optional[Dict[str, Any]]) -> str:
     if span["granularity"] == "hour":
         return "%d-%02d-%02d %02d:00-%02d:00" % (
             start.year, start.month, start.day, start.hour, end.hour % 24,
+        )
+    # 「最近3天」这种多日区间只给起始日期会让人以为只回看了一天
+    try:
+        days = (int(span["end"]) - int(span["start"])) / 86400.0
+    except (KeyError, TypeError, ValueError):
+        days = 1.0
+    if days > 1.5:
+        last = datetime.fromtimestamp(int(span["end"]) - 1)
+        return "%d-%02d-%02d ~ %d-%02d-%02d" % (
+            start.year, start.month, start.day, last.year, last.month, last.day,
         )
     return "%d-%02d-%02d" % (start.year, start.month, start.day)

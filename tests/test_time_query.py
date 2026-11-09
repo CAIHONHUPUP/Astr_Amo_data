@@ -140,6 +140,42 @@ class HierarchyTests(unittest.TestCase):
             self.assertNotRegex(row["content"], r"^\d{4}-\d{2}-\d{2}")
         self.assertTrue(all(row["created_at"] for row in rows))
 
+    def test_recent_days_label_shows_range(self):
+        text = describe_span(parse_time_span("最近3天", NOW))
+        self.assertIn("~", text, text)
+
+    def test_month_only_returns_whole_month(self):
+        for text in ("11月", "去年11月"):
+            span = parse_time_span(text, NOW)
+            self.assertEqual(span["granularity"], "month", text)
+            self.assertGreaterEqual(span["end"] - span["start"], 28 * 86400, text)
+
+    def test_noon_and_midnight(self):
+        noon = parse_time_span("昨天中午12点", NOW)
+        self.assertEqual(datetime.fromtimestamp(noon["start"]).hour, 12)
+        midnight = parse_time_span("昨天晚上12点", NOW)
+        self.assertEqual(datetime.fromtimestamp(midnight["start"]).hour, 0)
+        self.assertEqual(datetime.fromtimestamp(midnight["start"]).day, 9)
+
+    def test_whole_year_span_not_blocked_by_empty_january(self):
+        # 「今年」从 1 月 1 日算起；1 月没聊天不代表全年没聊天（旧逻辑会在这里直接返回空）
+        span = parse_time_span("今年", NOW)
+        rows, path = self.store.hierarchical_messages(BOT, span, umo=UMO)
+        self.assertEqual(len(rows), 5)
+        self.assertEqual(path["years"], {"2026": 5})
+
+    def test_span_across_month_keeps_later_days(self):
+        # 「最近N天」跨月时，起始那几天完全可能没聊天；不能因为起始月空着就把后面有消息的日子一起丢掉
+        start = int(datetime(2026, 10, 30).timestamp())
+        end = int(datetime(2026, 11, 9).timestamp())
+        span = {"start": start, "end": end, "label": "最近10天",
+                "granularity": "day", "year": 2026, "month": 10, "day": 30}
+        rows, path = self.store.hierarchical_messages(BOT, span, umo=UMO)
+        self.assertEqual(path["days"], {})
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(all("2026-11" in datetime.fromtimestamp(r["created_at"]).strftime("%Y-%m")
+                            for r in rows))
+
     def test_empty_window_returns_empty(self):
         span = parse_time_span("2025年1月1日", NOW)
         rows, path = self.store.hierarchical_messages(BOT, span, umo=UMO)

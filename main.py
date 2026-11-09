@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 
@@ -59,7 +60,7 @@ except ImportError:  # 单文件加载时的兜底
             return ""
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.5.0"
+PLUGIN_VERSION = "2.4.2"
 DEFAULT_BOT_ID = "default"
 
 
@@ -133,7 +134,10 @@ class MemoryAPI:
     async def recall(self, bot_id: str, uid: str, query: str = "", limit: int = 6,
                      scope: str = "", group_id: str = "") -> list:
         try:
-            return self._store.recall(
+            # recall 里有 BM25 打分（几千条记忆时几十毫秒）和可选的 embedding 网络请求，
+            # 放线程里跑，别把 AstrBot 的事件循环卡住（卡住=所有聊天都排队）
+            return await asyncio.to_thread(
+                self._store.recall,
                 self._bot(bot_id), uid, query,
                 limit=limit, scope=scope, group_id=group_id,
             )
@@ -1015,7 +1019,7 @@ class AmoDataPlugin(Star):
         while True:
             try:
                 await asyncio.sleep(3600)
-                bot_id = self._bot_id({})
+                bot_id = self._bot_id({}, write=True)  # 空 bot_id 会让清理/压缩变成空转（WHERE bot_id=''）
                 try:
                     await self.mem.maintenance(bot_id, self.chat_days, self.compress_after, self.log_days)
                 except Exception as exc:

@@ -197,7 +197,7 @@ def _cosine(a: List[float], b: List[float]) -> float:
 
 # 常见"会变的事实"槽位：同一个人身上出现不同值就说明旧的过期了
 SLOT_PATTERNS = (
-    ("home", re.compile(r"(?:住在|住在|住|搬到|搬家到|搬去)\s*([\u4e00-\u9fffA-Za-z0-9\u00b7\-]{2,14})")),
+    ("home", re.compile(r"(?:住在|住到|搬到|搬家到|搬去)\s*([\u4e00-\u9fffA-Za-z0-9\u00b7\-]{2,14})")),
     ("work", re.compile(r"在\s*([\u4e00-\u9fffA-Za-z0-9\u00b7\-]{2,14})\s*(?:上班|工作|公司)")),
     ("birthday", re.compile(r"生日(?:是|在)?\s*(\d{1,2}\s*月\s*\d{1,2}\s*[日号])")),
     ("job", re.compile(r"(?:职业是|工作是|做的?是)\s*([\u4e00-\u9fffA-Za-z0-9]{2,10})")),
@@ -215,6 +215,9 @@ def _slot_facts(text: Any) -> Dict[str, str]:
         value = re.sub(r"\s+", "", match.group(1) or "")
         # 去掉"住了/那边/一带/附近/了/的"这类尾巴，否则同一个地点会算出两个值
         value = re.sub(r"(住了|住|那边|这边|一带|附近|旁边|了|的)+$", "", value)
+        # 「记住北京的咖啡」这类会被误当成住址：带虚词的不是地名，直接不要
+        if not value or re.search(r"[的了着这那]", value):
+            continue
         # 只保留地名/名词部分（去掉句末标点）
         value = value.strip("，。！？、;；")
         if value:
@@ -404,6 +407,7 @@ class DataStore:
                     superseded_by INTEGER DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_mem_lookup ON memories(bot_id, uid, scope, group_id);
+                CREATE INDEX IF NOT EXISTS idx_mem_hit ON memories(bot_id, uid, last_hit_at);
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_mem_idem ON memories(bot_id, uid, idem_key)
                     WHERE idem_key != '';
 
@@ -519,7 +523,8 @@ class DataStore:
                     continue
                 try:
                     conn.execute(ddl)
-                except Exception:
+                except Exception as exc:
+                    logger.warning("[amo_data] 补列 %s 失败: %s" % (column, exc))
                     continue
             try:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_pid ON messages(bot_id, pid, created_at)")
@@ -819,13 +824,27 @@ class DataStore:
             keep_uid = keep_links[0]["uid"] if keep_links else ""
             if keep_uid:
                 for item in drop_links:
-                    try:
-                        self.conn.execute(
-                            "UPDATE OR IGNORE memories SET uid=? WHERE bot_id=? AND uid=?",
-                            (keep_uid, bot_id, item["uid"]),
-                        )
-                    except Exception:
-                        continue
+                    rows = self.conn.execute(
+                        "SELECT id, idem_key FROM memories WHERE bot_id=? AND uid=?",
+                        (bot_id, item["uid"]),
+                    ).fetchall()
+                    for mem in rows:
+                        try:
+                            self.conn.execute(
+                                "UPDATE memories SET uid=? WHERE bot_id=? AND id=?",
+                                (keep_uid, bot_id, int(mem["id"])),
+                            )
+                        except sqlite3.IntegrityError:
+                            # 两边有同一条记忆：把旧的标 merged 挂到保留行，别让它变成孤儿
+                            conflict = self.conn.execute(
+                                "SELECT id FROM memories WHERE bot_id=? AND uid=? AND idem_key=?",
+                                (bot_id, keep_uid, mem["idem_key"]),
+                            ).fetchone()
+                            self.conn.execute(
+                                "UPDATE memories SET status='merged', superseded_by=? "
+                                "WHERE bot_id=? AND id=?",
+                                (int(conflict["id"]) if conflict else None, bot_id, int(mem["id"])),
+                            )
             self.conn.execute("DELETE FROM persons WHERE bot_id=? AND pid=?", (bot_id, drop_pid))
             self.conn.execute(
                 "UPDATE persons SET updated_at=? WHERE pid=?", (_now(), keep_pid)
@@ -935,11 +954,12 @@ class DataStore:
         """把一个 (平台, uid) 换成规范身份；没配别名就原样返回。"""
         platform, uid = str(platform or ""), str(uid)
         try:
-            row = self.conn.execute(
-                "SELECT alias_platform, alias_uid FROM identity_alias "
-                "WHERE bot_id=? AND platform=? AND uid=?",
-                (str(bot_id), platform, uid),
-            ).fetchone()
+            with self.lock:
+                row = self.conn.execute(
+                    "SELECT alias_platform, alias_uid FROM identity_alias "
+                    "WHERE bot_id=? AND platform=? AND uid=?",
+                    (str(bot_id), platform, uid),
+                ).fetchone()
         except Exception:
             return (platform, uid)
         if row and str(row["alias_platform"] or "").strip():
@@ -1240,7 +1260,8 @@ class DataStore:
             if idem_key:
                 row = self.conn.execute(
                     "SELECT id, content, importance FROM memories "
-                    "WHERE bot_id=? AND uid=? AND idem_key=?",
+                    "WHERE bot_id=? AND uid=? AND idem_key=? "
+                    "AND COALESCE(status,'active')='active'",
                     (bot_id, uid, idem_key),
                 ).fetchone()
                 if row:
@@ -1306,7 +1327,8 @@ class DataStore:
         with self.lock:
             rows = self.conn.execute(
                 "SELECT id, content FROM memories WHERE bot_id=? AND uid=? AND scope=? "
-                "AND group_id=? ORDER BY last_hit_at DESC LIMIT 200",
+                "AND group_id=? AND COALESCE(status,'active')='active' "
+                "ORDER BY last_hit_at DESC LIMIT 200",
                 (bot_id, uid, scope, group_id),
             ).fetchall()
         for row in rows:
@@ -1422,29 +1444,33 @@ class DataStore:
             drop = items[1:]
             if apply:
                 # 同一批摘要各有信息：把正文拼到保留的那条上，再标记别条（不丢内容）
-                keep_text = str(keep["content"] or "")
-                extra = [str(r["content"] or "").strip() for r in drop
-                         if str(r["content"] or "").strip()
-                         and str(r["content"]).strip() not in keep_text]
                 merged_text = str(keep["content"] or "")
-                for piece in extra:
-                    if piece and piece not in merged_text:
-                        merged_text += "\n" + piece
-                merged_text = merged_text[:4000]
-                with self.lock:
-                    self.conn.execute(
-                        "UPDATE memories SET content=?, merged_count=COALESCE(merged_count,1)+?, "
-                        "importance=MAX(importance, ?) WHERE id=?",
-                        (merged_text, len(drop),
-                         max([float(r["importance"] or 0) for r in items]),
-                         int(keep["id"])),
-                    )
-                    self.conn.executemany(
-                        "UPDATE memories SET status='merged', superseded_by=? WHERE id=?",
-                        [(int(keep["id"]), int(r["id"])) for r in drop],
-                    )
-                    self.conn.commit()
-            merged += len(drop)
+                absorbed: List[sqlite3.Row] = []
+                for row in drop:
+                    piece = str(row["content"] or "").strip()
+                    if not piece or piece in merged_text:
+                        absorbed.append(row)  # 正文已经在保留行里，标 merged 不会丢内容
+                        continue
+                    candidate = merged_text + "\n" + piece
+                    if len(candidate) > 4000:
+                        break  # 超预算：这条和后面的都保持 active，绝不带病标 merged
+                    merged_text = candidate
+                    absorbed.append(row)
+                if absorbed:
+                    with self.lock:
+                        self.conn.execute(
+                            "UPDATE memories SET content=?, merged_count=COALESCE(merged_count,1)+?, "
+                            "importance=MAX(importance, ?) WHERE id=?",
+                            (merged_text, len(absorbed),
+                             max([float(r["importance"] or 0) for r in items]),
+                             int(keep["id"])),
+                        )
+                        self.conn.executemany(
+                            "UPDATE memories SET status='merged', superseded_by=? WHERE id=?",
+                            [(int(keep["id"]), int(r["id"])) for r in absorbed],
+                        )
+                        self.conn.commit()
+            merged += len(absorbed) if apply else 0
 
         # 通用近重复（只处理最近 limit 条，代价可控）
         dedup = 0
@@ -1747,6 +1773,12 @@ class DataStore:
                 "DELETE FROM memories WHERE bot_id=? AND id=?",
                 (str(bot_id), int(memory_id)),
             )
+            if cur.rowcount:
+                # 向量表是独立表，不跟着删会一直堆积（AUTOINCREMENT 不复用 id，不会串数据）
+                try:
+                    self.conn.execute("DELETE FROM memory_vec WHERE memory_id=?", (int(memory_id),))
+                except Exception:
+                    pass
             self.conn.commit()
             return bool(cur.rowcount)
 
@@ -1758,19 +1790,31 @@ class DataStore:
         if not text:
             return 0
         platform = str(platform or "").strip() or platform_of_umo(umo)
+        role_n = "bot" if str(role) == "bot" else "user"
+        try:
+            ts = int(created_at) if created_at else _now()
+        except (TypeError, ValueError):
+            ts = _now()
         pid = 0
-        if str(role) != "bot" and uid:
+        if role_n != "bot" and uid:
             try:
                 pid = self.resolve_person(bot_id, platform, uid, name)
             except Exception:
                 pid = 0
         with self.lock:
+            # 平台重连/机器人回声会把同一句话重复推过来：10 秒内完全相同的只留一条
+            dup = self.conn.execute(
+                "SELECT id FROM messages WHERE bot_id=? AND umo=? AND uid=? AND role=? "
+                "AND content=? AND created_at>=? ORDER BY id DESC LIMIT 1",
+                (str(bot_id), str(umo), str(uid), role_n, text, ts - 10),
+            ).fetchone()
+            if dup:
+                return int(dup["id"] or 0)
             cur = self.conn.execute(
                 "INSERT INTO messages(bot_id, umo, uid, name, role, content, created_at, platform, pid) "
                 "VALUES(?,?,?,?,?,?,?,?,?)",
                 (str(bot_id), str(umo), str(uid), _clean(name, 64),
-                 "bot" if str(role) == "bot" else "user", text,
-                 int(created_at) if created_at else _now(), platform, pid),
+                 role_n, text, ts, platform, pid),
             )
             self.conn.commit()
             return int(cur.lastrowid or 0)
@@ -1925,34 +1969,31 @@ class DataStore:
         if start_dt is None:
             return [], path
 
-        # 1) 年：这一年有没有消息
+        # 下面四层只用来给面板/日志看「哪一层有东西」，**不能据此提前返回**：
+        # 「最近3天」这类区间会跨月/跨年，起始那几天完全可能没聊天，后面几天有；
+        # 按起始月/日判空会把整段记录丢掉（表现为明明聊过却答"没聊到什么"）。
+        # 1) 年
         years = self.time_buckets(bot_id, umo, uid, start=start, end=end)
         path["years"] = years
         year = "%04d" % start_dt.year
-        if year not in years:
-            return [], path
 
-        # 2) 月：这一年里落在哪个月（通常只有一个月，但跨月查询也能覆盖）
+        # 2) 月
         months = self.time_buckets(bot_id, umo, uid, year=year, start=start, end=end)
         path["months"] = months
-        if not months:
-            return [], path
         month = "%02d" % start_dt.month
 
-        # 3) 日：这个月里落到哪一天
+        # 3) 日
         days = self.time_buckets(bot_id, umo, uid, year=year, month=month,
                                  start=start, end=end)
         path["days"] = days
-        if not days:
-            return [], path
         day = "%02d" % start_dt.day
 
-        # 4) 小时：这一天里落到哪个小时
+        # 4) 小时
         hours = self.time_buckets(bot_id, umo, uid, year=year, month=month, day=day,
                                   start=start, end=end)
         path["hours"] = hours
 
-        # 5) 具体消息
+        # 5) 具体消息（真正的结果以这一步为准）
         rows = self.messages_in_span(bot_id, start, end, umo=umo, uid=uid, limit=limit)
         path["messages"] = len(rows)
         return rows, path
@@ -1996,7 +2037,7 @@ class DataStore:
         counts = {"compressed": 0, "purged": 0}
         with self.lock:
             rows = self.conn.execute(
-                "SELECT id, umo, uid, name, role, content, created_at FROM messages "
+                "SELECT id, umo, uid, name, role, content, created_at, pid FROM messages "
                 "WHERE bot_id=? AND created_at<? AND compressed=0 ORDER BY created_at",
                 (str(bot_id), cut),
             ).fetchall()
@@ -2019,12 +2060,18 @@ class DataStore:
                     "[%s 共 %d 条 · %s] %s" % (day, len(items), "、".join(speakers), body), 2000
                 )
                 stamp = int(items[0]["created_at"])
+                # 摘要也要归属到人：按 uid 的时间回看（amo 的【按时间回看】）否则什么都取不到
+                uid_counts: Dict[str, int] = {}
+                for item in items:
+                    value = str(item["uid"] or "")
+                    if value:
+                        uid_counts[value] = uid_counts.get(value, 0) + 1
+                bucket_uid = max(uid_counts, key=uid_counts.get) if uid_counts else ""
                 self.conn.execute(
                     "INSERT INTO messages(bot_id, umo, uid, name, role, content, created_at, "
                     "compressed, platform, pid) VALUES(?,?,?,?,?,?,?,1,?,?)",
-                    (str(bot_id), umo, "", "摘要", "summary", summary, stamp,
-                     platform_of_umo(umo), int(items[0]["pid"] or 0)
-                     if "pid" in items[0].keys() else 0),
+                    (str(bot_id), umo, bucket_uid, "摘要", "summary", summary, stamp,
+                     platform_of_umo(umo), int(items[0]["pid"] or 0)),
                 )
                 ids = [int(item["id"]) for item in items]
                 self.conn.executemany(
@@ -2097,18 +2144,20 @@ class DataStore:
         if not uid:
             return ""
         try:
-            row = self.conn.execute(
-                "SELECT name FROM profiles WHERE bot_id=? AND uid=? AND name!=''", (bot_id, uid)
-            ).fetchone()
+            with self.lock:
+                row = self.conn.execute(
+                    "SELECT name FROM profiles WHERE bot_id=? AND uid=? AND name!=''", (bot_id, uid)
+                ).fetchone()
             if row and str(row["name"] or "").strip():
                 return str(row["name"]).strip()
         except Exception:
             pass
         try:
-            row = self.conn.execute(
-                "SELECT p.name FROM person_links l JOIN persons p ON p.pid=l.pid "
-                "WHERE l.bot_id=? AND l.uid=? AND p.name!='' LIMIT 1", (bot_id, uid)
-            ).fetchone()
+            with self.lock:
+                row = self.conn.execute(
+                    "SELECT p.name FROM person_links l JOIN persons p ON p.pid=l.pid "
+                    "WHERE l.bot_id=? AND l.uid=? AND p.name!='' LIMIT 1", (bot_id, uid)
+                ).fetchone()
             if row and str(row["name"] or "").strip():
                 return str(row["name"]).strip()
         except Exception:
