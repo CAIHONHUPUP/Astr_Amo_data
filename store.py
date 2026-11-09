@@ -1206,6 +1206,7 @@ class DataStore:
         created_at: Optional[int] = None,
         last_hit_at: Optional[int] = None,
         hit_count: int = 0,
+        keep_existing_content: bool = False,
     ) -> Dict[str, Any]:
         text = _clean(content)
         if not text:
@@ -1256,13 +1257,21 @@ class DataStore:
             if self.setting("auto_dedupe", True):
                 cand = self._near_duplicate(bot_id, uid, scope, group_id, text)
                 if cand is not None:
-                    self.conn.execute(
-                        "UPDATE memories SET content=?, importance=MAX(importance, ?), "
-                        "last_hit_at=?, merged_count=merged_count+1 WHERE id=?",
-                        (text, importance, now, int(cand["id"])),
-                    )
+                    if keep_existing_content:
+                        # 备份导入时不要用旧文本覆盖现在这条更完整的记忆
+                        self.conn.execute(
+                            "UPDATE memories SET importance=MAX(importance, ?), "
+                            "last_hit_at=?, merged_count=merged_count+1 WHERE id=?",
+                            (importance, now, int(cand["id"])),
+                        )
+                    else:
+                        self.conn.execute(
+                            "UPDATE memories SET content=?, importance=MAX(importance, ?), "
+                            "last_hit_at=?, merged_count=merged_count+1 WHERE id=?",
+                            (text, importance, now, int(cand["id"])),
+                        )
+                        self._enqueue_embedding(int(cand["id"]), text)
                     self.conn.commit()
-                    self._enqueue_embedding(int(cand["id"]), text)
                     return {"ok": True, "memory_id": int(cand["id"]), "duplicate": True}
 
             cur = self.conn.execute(
@@ -2279,6 +2288,7 @@ class DataStore:
                     created_at=item.get("created_at"),
                     last_hit_at=item.get("last_hit_at"),
                     hit_count=item.get("hit_count", 0),
+                    keep_existing_content=True,
                 )
                 if not res.get("ok"):
                     continue
@@ -2355,7 +2365,12 @@ class DataStore:
         """把当前 SQLite 拷贝一份到 dest_dir，并只保留最近 keep 份。"""
         dest_dir = str(dest_dir)
         os.makedirs(dest_dir, exist_ok=True)
-        name = "amo_data-%s.db" % datetime.now().strftime("%Y%m%d-%H%M%S")
+        stem = "amo_data-%s" % datetime.now().strftime("%Y%m%d-%H%M%S")
+        name = stem + ".db"
+        index = 1
+        while os.path.exists(os.path.join(dest_dir, name)):
+            name = "%s-%d.db" % (stem, index)
+            index += 1
         dest = os.path.join(dest_dir, name)
         with self.lock:
             target = sqlite3.connect(dest)

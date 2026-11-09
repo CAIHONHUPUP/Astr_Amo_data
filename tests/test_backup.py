@@ -88,6 +88,26 @@ class ExportImportTests(unittest.TestCase):
         self.assertEqual(snap["format"], "astr_amo_data")
         self.assertEqual(len(snap["memories"]), 2)
 
+    def test_import_does_not_overwrite_richer_existing_memory(self):
+        other = DataStore(os.path.join(self.tmp, "d.db"))
+        try:
+            # 现在的库里是一条更完整的记忆
+            self.store.remember(BOT, A, "主人喜欢喝美式咖啡，不加糖，早上一定要喝一杯", importance=0.8)
+            other.remember(BOT, A, "主人喜欢喝美式咖啡", importance=0.5)
+            snapshot = other.export_snapshot(BOT)
+            self.store.import_snapshot(snapshot)
+            contents = [row["content"] for row in self.store.list_memories(BOT, A, 50)]
+            self.assertIn("主人喜欢喝美式咖啡，不加糖，早上一定要喝一杯", contents)
+        finally:
+            other.close()
+
+    def test_backup_names_are_unique(self):
+        dest = os.path.join(self.tmp, "backups2")
+        first = self.store.backup_database(dest, keep=10)
+        second = self.store.backup_database(dest, keep=10)
+        self.assertNotEqual(first, second)
+        self.assertEqual(len(self.store.list_backups(dest)), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
