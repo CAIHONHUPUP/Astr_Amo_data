@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.5.4
+
+- `repo` 统一成主仓库规范写法 `https://github.com/GM888888456/Astrbot_Amo_data/`；
+- 新增 `tools/check_version.py`：四处版本一致 + 尾号偶数/无 1、7 + repo 地址格式，一条命令校验。
+
 ## 2.5.2（关系图对齐陪伴）
 
 - `api_relations` 把画像里的 `relation` 也带进关系图：画像设了「恋人」，图上就是恋人，
