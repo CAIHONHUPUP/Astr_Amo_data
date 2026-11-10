@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.5.8（上架审核两项合规）
+
+Cloud 自动安全检查未通过，两条都改：
+
+### 1. logger 禁止回退内置 logging
+
+`store.py` 在 `from astrbot.api import logger` 失败时会 `import logging` + `logging.getLogger`，
+违反「logger 只能从 astrbot.api 导入」的规定。现在把兜底换成一个空实现 `_NullLogger`
+（不写日志、也不改全局 logging 配置），脱离 AstrBot 的单测照样能跑。
+
+### 2. 面板接口不再同步阻塞事件循环
+
+`store.recall()` 在开启语义召回时会走 `urllib.request.urlopen`（同步 HTTP），
+`api_memories` 直接 `self.store.recall(...)` 会把事件循环卡住，最多 `embedding_timeout` 秒。
+现在改成 `await asyncio.to_thread(...)`；`MemoryAPI.recall` 原本就是 to_thread，无需再改。
+
+另外加了 `tests/test_review_compliance.py` 用源码守卫盯住这两条，回归会直接失败。
+
+测试 142 passed。
+
 ## 2.5.6（「昨天」按配置时区算）
 
 CI 在北京时间 00:00 之后挂了一次，查出来是真 bug：

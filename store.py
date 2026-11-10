@@ -36,9 +36,16 @@ except Exception:
 try:
     from astrbot.api import logger
 except Exception:  # 单测/纯逻辑场景允许脱离 AstrBot 运行
-    import logging
+    # 规范：logger 只能从 astrbot.api 导入，禁止回退内置 logging。
+    # 脱离 AstrBot 时用空实现，既不写日志也不改全局 logging 配置。
+    class _NullLogger:
+        def __getattr__(self, name):
+            def _noop(*args, **kwargs):
+                return None
 
-    logger = logging.getLogger("amo_data")
+            return _noop
+
+    logger = _NullLogger()
 
 
 def _now() -> int:

@@ -65,7 +65,7 @@ except ImportError:  # 单文件加载时的兜底
             return ""
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.5.6"
+PLUGIN_VERSION = "2.5.8"
 DEFAULT_BOT_ID = "default"
 
 
@@ -807,7 +807,9 @@ class AmoDataPlugin(Star):
         uid = str(payload.get("uid") or "").strip()
         query = str(payload.get("q") or "").strip()
         if query:
-            items = self.store.recall(bot_id, uid, query, 100) if uid else []
+            # recall 开了语义召回会走 HTTP（embedding）；面板是 async 处理函数，
+            # 同步调用会卡住事件循环，最多 embedding_timeout 秒。丢线程池里跑。
+            items = await asyncio.to_thread(self.store.recall, bot_id, uid, query, 100) if uid else []
         else:
             items = self.store.list_memories(bot_id, uid, 200)
         return {"code": 0, "data": {"items": items}}
