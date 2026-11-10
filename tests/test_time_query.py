@@ -4,11 +4,13 @@
 import os
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import clock  # noqa: E402
 from store import DataStore  # noqa: E402
 from time_query import describe_span, parse_time_span  # noqa: E402
 
@@ -85,6 +87,13 @@ class ParseTests(unittest.TestCase):
 
 class HierarchyTests(unittest.TestCase):
     def setUp(self):
+        # 数据插件默认按 Asia/Shanghai 分天；CI 容器是 UTC，测试不显式设时区
+        # 就会出现「06/07/08 变成 07/08/09」的假红。
+        self._prev_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "Asia/Shanghai"
+        if hasattr(time, "tzset"):
+            time.tzset()
+        clock.configure("Asia/Shanghai")
         self.tmp = _tmpdir()
         self.store = DataStore(os.path.join(self.tmp, "chat.db"))
         self.rows = [
@@ -100,6 +109,13 @@ class HierarchyTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
+        clock.restore()
+        if self._prev_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = self._prev_tz
+        if hasattr(time, "tzset"):
+            time.tzset()
 
     def test_buckets_go_year_month_day_hour(self):
         self.assertEqual(list(self.store.time_buckets(BOT, umo=UMO)), ["2026"])
