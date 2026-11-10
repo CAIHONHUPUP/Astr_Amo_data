@@ -65,7 +65,7 @@ except ImportError:  # 单文件加载时的兜底
             return ""
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.5.8"
+PLUGIN_VERSION = "2.6.0"
 DEFAULT_BOT_ID = "default"
 
 
