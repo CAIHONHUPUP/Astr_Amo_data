@@ -76,6 +76,7 @@ await plugin.mem.cache_set(bot_id, "schedule:2026-11-09", data, ttl=86400)
 
 ## 版本
 
+- 2.4.10：召回候选池分层（recall_recent_pool）、消息去重、时间检索增强，重新提交上架。
 - 2.4.8：仓库改名为 Astrbot_Amo_data（插件 ID 仍是 Astr_Amo_data），链接同步。
 - 2.4.6：补齐时间回看 / 每日总结 / 里程碑接口（recall_messages / messages_since）。
 - 2.4.4：修好数据面板「聊天」页（之前没有加载函数），接口加超时。
