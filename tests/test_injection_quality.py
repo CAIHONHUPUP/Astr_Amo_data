@@ -82,14 +82,52 @@ class SummaryMergeKeepsTextTests(unittest.TestCase):
         self.assertEqual(rows[0]["kind"], "daily_digest")
 
     def test_merged_summary_keeps_all_text(self):
-        a = self.store.remember(BOT, UID, "2026-11-08 上午和主人聊了修 bug。", kind="conversation_summary")
-        b = self.store.remember(BOT, UID, "2026-11-08 晚上和主人聊了晚饭和天气。", kind="conversation_summary")
+        self.store.remember(BOT, UID, "2026-11-08 上午和主人聊了修 bug。", kind="conversation_summary")
+        self.store.remember(BOT, UID, "2026-11-08 晚上和主人聊了晚饭和天气。", kind="conversation_summary")
         self.store.compress_memories(BOT, apply=True)
         keeper = self.store.conn.execute(
             "SELECT content FROM memories WHERE status='active' AND kind='conversation_summary'"
         ).fetchone()
         self.assertIn("修 bug", keeper["content"])
         self.assertIn("晚饭和天气", keeper["content"])
+
+
+class DateDigestPriorityTests(unittest.TestCase):
+    """问「昨天我们干了什么」时，当天的日总结不能被 11-04 那种高频旧记忆压住。
+
+    真机现象（2026-11-10 15:27）：「昨天我们干了什么」召回的 6 条里，11-09 日总结
+    排第 4（0.56），前三条是 11-04/05 的「关灯睡了 / 晕碳 / 拍午饭」，她于是把
+    「最后就睡了」接上去，还编了库里没有的「你出发来东莞」。
+    """
+
+    def setUp(self):
+        from datetime import date, timedelta
+        self.tmp = _tmpdir()
+        self.store = DataStore(os.path.join(self.tmp, "a.db"), settings={"auto_dedupe": False})
+        self.tag = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    def tearDown(self):
+        self.store.close()
+
+    def test_vague_time_question_puts_digest_first(self):
+        self.store.remember(BOT, UID, "【" + self.tag + "】他当天忙着排队修 bug，等公交回家，最后互道晚安。",
+                            kind="daily_digest", importance=0.75)
+        for i in range(4):
+            self.store.remember(BOT, UID, "约定2026年11月5号你要跟我讲一天干了啥、有没有摸鱼（%d）" % i,
+                                kind="imported_memory", importance=0.6)
+        rows = self.store.recall(BOT, UID, "昨天我们干了什么", limit=6)
+        self.assertTrue(rows)
+        self.assertEqual(rows[0]["kind"], "daily_digest")
+
+    def test_specific_time_question_does_not_pin_digest(self):
+        # 「昨天中午吃的什么」是具体问法：日总结只给小幅加成，
+        # 精确命中那条（番茄鸡蛋面）不能被只有「修 bug」的日总结顶掉
+        self.store.remember(BOT, UID, "【" + self.tag + "】他当天在家修 bug，晚上吃了猪肉粽。",
+                            kind="daily_digest", importance=0.75)
+        self.store.remember(BOT, UID, "他 " + self.tag + " 中午吃了番茄鸡蛋面。", importance=0.7)
+        rows = self.store.recall(BOT, UID, "昨天中午吃的什么", limit=4)
+        self.assertTrue(rows)
+        self.assertIn("番茄鸡蛋面", rows[0]["content"])
 
 
 if __name__ == "__main__":

@@ -96,6 +96,13 @@ def configure(name=""):
     _state["name"] = normalize(name)
     target = resolve_name(_state["name"])
     prev = os.environ.get("TZ")
+    if not hasattr(_time, "tzset"):
+        # Windows 等没有 tzset 的平台：把 TZ 写成 "Asia/Shanghai" 这种 IANA 名字，
+        # C 运行库会当成非法值回落到 UTC——于是 datetime.now() 还是本地时间，
+        # 而 fromtimestamp()/mktime() 已经变成 UTC，同一进程里两套时钟差 8 小时。
+        # 这里宁可不碰 TZ，统一交给 zoneinfo 换算（now/from_timestamp 都支持）。
+        _applied.update({"ok": False, "name": target, "prev": None})
+        return target
     try:
         os.environ["TZ"] = target
         _time.tzset()
@@ -108,8 +115,11 @@ def configure(name=""):
 def restore():
     """把进程时区还原（测试用）。"""
     prev = _applied.get("prev")
-    if _applied.get("ok") and prev is not None:
-        os.environ["TZ"] = prev
+    if _applied.get("ok"):
+        if prev is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = prev
         try:
             _time.tzset()
         except Exception:

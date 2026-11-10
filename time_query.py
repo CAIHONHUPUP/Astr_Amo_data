@@ -95,15 +95,12 @@ def parse_time_span(text: Any, now: Optional[datetime] = None) -> Optional[Dict[
     now = now or _clock.now()
     # 先把「六号/十一点」这类中文数字换成阿拉伯数字，后面的正则就只认数字了
     raw = normalize_numbers(raw)
-    lowered = raw.lower()
 
     # ---- 1) 相对天数 ----
     day_base = None
-    relative_label = ""
     for word, offset in (("大前天", 3), ("前天", 2), ("昨天", 1), ("今天", 0), ("今日", 0)):
         if word in raw:
             day_base = now - timedelta(days=offset)
-            relative_label = word
             break
 
     # ---- 2) 最近 N 天 / N 小时 / N 分钟 ----
@@ -129,7 +126,10 @@ def parse_time_span(text: Any, now: Optional[datetime] = None) -> Optional[Dict[
         if prefix in ("上", "上上"):
             week_start -= timedelta(days=7 if prefix == "上" else 14)
         day_base = week_start + timedelta(days=target_wd)
-        relative_label = match.group(0).strip()
+        if not prefix and day_base.date() > now.date():
+            # 周一问「周日我们聊了什么」：指的是上一个周日，不是还没到的那个，
+            # 否则时间窗落在未来，回看永远空。
+            day_base -= timedelta(days=7)
 
     # ---- 4) 年 ----
     year = None
@@ -180,16 +180,29 @@ def parse_time_span(text: Any, now: Optional[datetime] = None) -> Optional[Dict[
         if word in raw:
             tod = (word, start_h, end_h)
             break
-    if tod and hour is not None and hour <= 12 and tod[1] >= 13:
-        # 「晚上10点」= 22 点，「下午3点」= 15 点；「中午12点」保持 12 点
-        shifted = hour + 12
-        if shifted < 24:
-            hour = shifted
-        elif tod[1] >= 19:
-            # 「晚上12点」= 当天 24:00 → 次日 0 点（原来的 %24 会变成当天 00:00）
-            hour = 0
-            hour_next_day = True
-        # 「下午12点」按中午 12 点算，不挪
+    if tod and hour is not None:
+        word = str(tod[0])
+        if word == "凌晨":
+            # 「凌晨12点」= 0 点；「凌晨1点」就是 1 点
+            hour = 0 if hour == 12 else hour
+        elif word in ("深夜", "夜里"):
+            # 「深夜1点」= 1 点，不能加 12；「深夜11点」= 23 点
+            if hour == 12:
+                hour, hour_next_day = 0, True
+            elif 6 <= hour <= 11:
+                hour += 12
+        elif word in ("晚上", "今晚", "昨晚", "傍晚"):
+            if hour == 12:
+                hour, hour_next_day = 0, True
+            elif hour < 12:
+                hour += 12
+        elif word == "中午":
+            if 1 <= hour <= 2:
+                hour += 12
+        elif word == "下午":
+            if hour < 12:
+                hour += 12
+        # 上午/早上/早晨：原样
     if hour is not None and tod is not None and day_base is None and not year and not month and day is None:
         # 只说了时段+几点（如「中午12点」）：默认今天
         day_base = now
@@ -262,8 +275,8 @@ def describe_span(span: Optional[Dict[str, Any]]) -> str:
     """把解析结果说成一句人话（面板/日志用）。"""
     if not span:
         return "没提时间"
-    start = datetime.fromtimestamp(span["start"])
-    end = datetime.fromtimestamp(span["end"])
+    start = _clock.from_timestamp(span["start"])
+    end = _clock.from_timestamp(span["end"])
     if span["granularity"] == "year":
         return "%d 年" % start.year
     if span["granularity"] == "month":
@@ -278,7 +291,7 @@ def describe_span(span: Optional[Dict[str, Any]]) -> str:
     except (KeyError, TypeError, ValueError):
         days = 1.0
     if days > 1.5:
-        last = datetime.fromtimestamp(int(span["end"]) - 1)
+        last = _clock.from_timestamp(int(span["end"]) - 1)
         return "%d-%02d-%02d ~ %d-%02d-%02d" % (
             start.year, start.month, start.day, last.year, last.month, last.day,
         )

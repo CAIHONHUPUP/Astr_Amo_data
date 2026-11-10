@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """记忆备份与导出/导入。"""
 
-import json
 import os
 import sys
 import tempfile

@@ -25,13 +25,23 @@ import struct
 import threading
 import time
 import urllib.request
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from . import clock as _clock
 except Exception:
     import clock as _clock
+
+# 时间解析必须两种导入都试：AstrBot 以 data.plugins.Astr_Amo_data 包方式加载时，
+# 函数里的顶层 from time_query import ... 会 ModuleNotFoundError、被 except 吞掉，
+# span 恒为 None，于是「问昨天 → 拉当天日总结」的整段逻辑从来没执行过。
+try:
+    from .time_query import parse_time_span as _parse_time_span
+except Exception:
+    try:
+        from time_query import parse_time_span as _parse_time_span
+    except Exception:
+        _parse_time_span = None
 
 try:
     from astrbot.api import logger
@@ -90,12 +100,38 @@ def platform_label(platform: str) -> str:
     return PLATFORM_LABELS.get(key, str(platform).strip())
 
 
+PLATFORM_ALIASES = {"qq": "aiocqhttp", "onebot": "aiocqhttp", "onebotv11": "aiocqhttp",
+                    "飞书": "lark", "feishu": "lark"}
+KNOWN_PLATFORMS = {"aiocqhttp", "lark", "webchat", "telegram", "discord", "slack", "wecom"}
+
+
+def normalize_platform(platform: str = "", umo: str = "") -> str:
+    """平台名归一。
+
+    坑：QQ 的 umo 前缀是**机器人名字**（``大肥鱼:FriendMessage:302578963``），不是平台名，
+    以前 ``platform_of_umo`` 直接取第一段，于是她的回复被写成 platform='大肥鱼'，
+    跨平台查询按 platform='aiocqhttp' 就查不到那半边（QQ 聊天在库里被劈成两份）。
+    """
+    value = str(platform or "").strip()
+    head = str(umo or "").strip().split(":", 1)[0].strip()
+    for candidate in (value, head):
+        key = candidate.lower()
+        if key in PLATFORM_ALIASES:
+            return PLATFORM_ALIASES[key]
+        if key in KNOWN_PLATFORMS:
+            return key
+    # 都不是已知平台：QQ 那种「用 bot 名字当 umo 前缀」的，按 Friend/GroupMessage 认
+    if head and (":FriendMessage:" in str(umo) or ":GroupMessage:" in str(umo)):
+        return "aiocqhttp"
+    return value.lower() or head.lower()
+
+
 def platform_of_umo(umo: str) -> str:
-    """umo 形如 ``aiocqhttp:GroupMessage:123456``，第一段就是平台。"""
+    """umo 形如 ``aiocqhttp:GroupMessage:123456``：能认的取平台，认不出按 QQ 兜底。"""
     text = str(umo or "").strip()
     if not text:
         return ""
-    return text.split(":", 1)[0].strip()
+    return normalize_platform("", text)
 
 
 def _name_key(text: Any) -> str:
@@ -1105,16 +1141,27 @@ class DataStore:
         per_platform = max(1, min(int(limit), 50))
         with self.lock:
             gathered: Dict[tuple, sqlite3.Row] = {}
+            # 他的话：按 (平台, uid) 取，每个平台各 per_platform 条；
+            # 她的话：role='bot' + 同一个 pid（跨平台都算），单独限量。
+            # 混在一条 SQL 里时她的话会把他的近聊挤出 limit（跨平台块就只剩她的发言）。
             for item in detail.get("links", []) or []:
                 rows = self.conn.execute(
                     "SELECT platform, uid, name, role, content, created_at, compressed FROM messages "
-                    "WHERE bot_id=? AND pid=? AND platform=? AND uid=? "
+                    "WHERE bot_id=? AND pid=? AND platform=? AND uid=? AND role!='bot' "
                     "ORDER BY created_at DESC LIMIT ?",
                     (str(bot_id), int(detail["pid"]), str(item.get("platform") or ""),
                      str(item.get("uid") or ""), per_platform),
                 ).fetchall()
                 for row in rows:
-                    gathered[(row["platform"], row["uid"], row["created_at"], row["content"])] = row
+                    gathered[(row["platform"], row["role"], row["created_at"], row["content"])] = row
+            bot_rows = self.conn.execute(
+                "SELECT platform, uid, name, role, content, created_at, compressed FROM messages "
+                "WHERE bot_id=? AND pid=? AND role='bot' "
+                "ORDER BY created_at DESC LIMIT ?",
+                (str(bot_id), int(detail["pid"]), per_platform),
+            ).fetchall()
+            for row in bot_rows:
+                gathered[(row["platform"], row["role"], row["created_at"], row["content"])] = row
             rows = sorted(gathered.values(), key=lambda row: int(row["created_at"] or 0), reverse=True)[: per_platform * 4]
             recent = [
                 {
@@ -1131,7 +1178,20 @@ class DataStore:
             ]
         memories: List[Dict[str, Any]] = []
         try:
-            memories = self.list_memories(str(bot_id), uid=str(uid), limit=limit) if hasattr(self, "list_memories") else []
+            # 记忆按**主 uid** 存的（飞书 open_id 会被 amo 归一成 QQ uid），
+            # 只按当前平台 uid 查，在飞书那头永远是空。把这个人所有身份都查一遍。
+            uid_candidates = [str(uid)] + [str(item.get("uid") or "") for item in detail.get("links", [])]
+            seen_mem = set()
+            for one_uid in uid_candidates:
+                if not one_uid:
+                    continue
+                for row in self.list_memories(str(bot_id), uid=one_uid, limit=limit) or []:
+                    key = (str(row.get("content") or "")[:80], row.get("created_at"))
+                    if key in seen_mem:
+                        continue
+                    seen_mem.add(key)
+                    memories.append(row)
+            memories = memories[: limit]
         except Exception:
             memories = []
         detail["others"] = [
@@ -1652,11 +1712,11 @@ class DataStore:
 
         # 解析查询里的时间词（昨天/前天/11月6号…），给对应日期的阶段记忆加权
         span = None
-        try:
-            from time_query import parse_time_span
-            span = parse_time_span(text)
-        except Exception:
-            span = None
+        if _parse_time_span is not None:
+            try:
+                span = _parse_time_span(text)
+            except Exception:
+                span = None
 
         # 自适应候选池：库小就全量精排，库大才截断（固定 400 会让老记忆永远进不了池）
         try:
@@ -1824,11 +1884,19 @@ class DataStore:
             if kind == "daily_digest" and (not text or rel >= 0.35):
                 score += 0.04
             # "昨天我们干了什么"这类问题：把对应那天的日总结直接顶上来
+            # 0.2 不够：11-04/05 那种高频旧记忆（关灯睡了、晕碳、拍午饭）能到 0.62，
+            # 日总结只有 0.56 排第 4，模型就改用旧事答「昨天」。0.5 让它稳定第一。
             if kind == "daily_digest" and span:
                 try:
                     date_tag = "%04d-%02d-%02d" % (int(span["year"]), int(span["month"]), int(span["day"]))
                     if date_tag in str(row["content"] or ""):
-                        score += 0.2
+                        # 模糊问法（「昨天我们干了什么」）日总结直接顶上来；
+                        # 具体问法（「昨天中午吃的什么」）仍按相关性排，只给小幅加成，
+                        # 否则精确命中那条（比如「中午吃了番茄鸡蛋面」）会被日总结挤下去。
+                        vague = any(word in text for word in
+                                    ("干了什么", "干什么", "干啥", "做了什么", "做了啥",
+                                     "聊了什么", "说了什么", "怎么过的", "过得怎么样"))
+                        score += 0.5 if vague else 0.2
                 except Exception:
                     pass
             elif kind == "conversation_summary" and (not text or rel >= 0.35):
@@ -1914,6 +1982,16 @@ class DataStore:
                 pid = self.resolve_person(bot_id, platform, uid, name)
             except Exception:
                 pid = 0
+        elif role_n == "bot":
+            # 她的话也要挂到这个人身上：跨平台「她在另一边说过什么」是按 pid 找的，
+            # 以前 bot 行 pid=0，person_context 永远取不到她的回复。
+            try:
+                if ":FriendMessage:" in str(umo):
+                    tail = str(umo).rsplit(":", 1)[-1].strip()
+                    if tail and tail != "bot":
+                        pid = self.resolve_person(bot_id, platform, tail)
+            except Exception:
+                pid = 0
         mid = _clean(str(message_id or "").strip(), 128)
         with self.lock:
             # 平台消息 id 是去重的最强证据：重连/回调重放时同一个 message_id 一定只落一条
@@ -1943,18 +2021,21 @@ class DataStore:
             return int(cur.lastrowid or 0)
 
     def messages_since(self, bot_id: str, uid: str = "", since_ts: int = 0,
-                       limit: int = 200, since: int = None) -> List[Dict[str, Any]]:
-        """取某个 uid 在 since_ts 之后说过/收到的消息（按时间正序）。
+                       limit: int = 200, since: int = None,
+                       umo: str = "") -> List[Dict[str, Any]]:
+        """取 since_ts 之后的消息（按时间正序）。
 
-        给陪伴插件的「每 N 轮里程碑归档」用：只按 uid，跨平台；
-        时间戳相同再按 id 排，保证顺序稳定。
+        给陪伴插件的「每 N 轮里程碑归档」用：
+        - 只给 ``uid``：这个人跨平台说过的话（旧行为）；
+        - 给 ``umo``：**这个会话**的双方对话。机器人自己的行 uid='bot'，
+          按 uid 过滤会把她的回复整段丢掉，所以里程碑要按会话取。
+        两个都不给时返回该 bot 全部消息（调用方自己负责别跨人）。
         """
         if since is not None:  # 兼容面板/里程碑旧调用（since=）
             since_ts = int(since)
-        where, params = _bot_filter(bot_id)
+        where, params = self._msg_filters(bot_id, umo, uid)
         sql = ("SELECT id, umo, uid, name, role, content, created_at, platform, pid "
-               "FROM messages WHERE 1=1" + where + " AND uid=?")
-        params.append(str(uid))
+               "FROM messages" + where)
         if since_ts:
             sql += " AND created_at>?"
             params.append(int(since_ts))
@@ -2248,11 +2329,13 @@ class DataStore:
         sql = ("SELECT id, umo, uid, name, role, content, created_at, compressed, "
                "platform, pid FROM messages" + where + " AND created_at>=? AND created_at<?")
         params += [int(start), int(end)]
-        sql += " ORDER BY created_at ASC, id ASC LIMIT ?"
+        # 超 limit 时要保留**最近**那段：ASC+LIMIT 返回窗口最早的一批，
+        # 「昨天」40+ 条时晚上整段看不到（时间回看块只剩凌晨/上午）。
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
         params.append(max(1, min(int(limit), 2000)))
         with self.lock:
             rows = self.conn.execute(sql, params).fetchall()
-        return [dict(row) for row in rows]
+        return [dict(row) for row in reversed(rows)]
 
     def hierarchical_messages(self, bot_id: str, span: Dict[str, Any],
                               umo: str = "", uid: str = "",
@@ -2266,7 +2349,7 @@ class DataStore:
         end = int(span.get("end") or 0)
         path: Dict[str, Any] = {"label": span.get("label"), "granularity": span.get("granularity")}
         try:
-            start_dt = datetime.fromtimestamp(start) if start else None
+            start_dt = _clock.from_timestamp(start) if start else None
         except (ValueError, OSError, OverflowError):
             start_dt = None
         if start_dt is None:
@@ -2354,15 +2437,20 @@ class DataStore:
                     label = "她" if str(item["role"]) == "bot" else str(item["name"] or item["uid"] or "对方")
                     if label not in speakers:
                         speakers.append(label)
-                body = " / ".join(
-                    ("她：" if str(item["role"]) == "bot" else str(item["name"] or "对方") + "：")
-                    + _clean(item["content"], 120)
-                    for item in items[:40]
-                )
-                summary = _clean(
-                    "[%s 共 %d 条 · %s] %s" % (day, len(items), "、".join(speakers), body), 2000
-                )
-                stamp = int(items[0]["created_at"])
+                # 以前只取前 40 条再截到 2000 字，然后把当天全部原文删掉：
+                # 一天 140 条时至少 100 条正文永久丢失。现在按字数切多段摘要，一条都不丢。
+                chunks: List[List[sqlite3.Row]] = []
+                current: List[sqlite3.Row] = []
+                used = 0
+                for item in items:
+                    piece = _clean(item["content"], 120)
+                    if current and used + len(piece) > 1800:
+                        chunks.append(current)
+                        current, used = [], 0
+                    current.append(item)
+                    used += len(piece)
+                if current:
+                    chunks.append(current)
                 # 摘要也要归属到人：按 uid 的时间回看（amo 的【按时间回看】）否则什么都取不到
                 uid_counts: Dict[str, int] = {}
                 for item in items:
@@ -2370,18 +2458,29 @@ class DataStore:
                     if value:
                         uid_counts[value] = uid_counts.get(value, 0) + 1
                 bucket_uid = max(uid_counts, key=uid_counts.get) if uid_counts else ""
-                self.conn.execute(
-                    "INSERT INTO messages(bot_id, umo, uid, name, role, content, created_at, "
-                    "compressed, platform, pid) VALUES(?,?,?,?,?,?,?,1,?,?)",
-                    (str(bot_id), umo, bucket_uid, "摘要", "summary", summary, stamp,
-                     platform_of_umo(umo), int(items[0]["pid"] or 0)),
-                )
+                for chunk in chunks:
+                    body = " / ".join(
+                        ("她：" if str(item["role"]) == "bot" else str(item["name"] or "对方") + "：")
+                        + _clean(item["content"], 120)
+                        for item in chunk
+                    )
+                    summary = _clean(
+                        "[%s 共 %d 条 · %s] %s"
+                        % (day, len(items), "、".join(speakers), body), 4000
+                    )
+                    self.conn.execute(
+                        "INSERT INTO messages(bot_id, umo, uid, name, role, content, created_at, "
+                        "compressed, platform, pid) VALUES(?,?,?,?,?,?,?,1,?,?)",
+                        (str(bot_id), umo, bucket_uid, "摘要", "summary", summary,
+                         int(chunk[0]["created_at"]), platform_of_umo(umo),
+                         int(chunk[0]["pid"] or 0)),
+                    )
                 ids = [int(item["id"]) for item in items]
                 self.conn.executemany(
                     "DELETE FROM messages WHERE bot_id=? AND id=?",
                     [(str(bot_id), item_id) for item_id in ids],
                 )
-                counts["compressed"] += 1
+                counts["compressed"] += len(chunks)
             cur = self.conn.execute(
                 "DELETE FROM messages WHERE bot_id=? AND created_at<?",
                 (str(bot_id), expire),
@@ -2621,7 +2720,7 @@ class DataStore:
         if not isinstance(data, dict):
             return {"memories": 0, "profiles": 0, "relations": 0, "links": 0, "aliases": 0}
         counts = {"memories": 0, "profiles": 0, "relations": 0, "links": 0,
-                  "aliases": 0, "skipped": 0}
+                  "aliases": 0, "skipped": 0, "failed": 0}
         default_bot = str(data.get("bot_id") or "") or ""
         for item in data.get("memories") or []:
             try:
@@ -2658,7 +2757,13 @@ class DataStore:
                             (status, int(item.get("superseded_by") or 0), mid),
                         )
                         self.conn.commit()
-            except Exception:
+            except Exception as exc:
+                # 以前这里静默 continue：二次导入时 74 条无声消失、计数还显示成功
+                counts["failed"] += 1
+                try:
+                    logger.warning("[amo_data] 导入记忆失败: %s" % exc)
+                except Exception:
+                    pass
                 continue
         for item in data.get("profiles") or []:
             try:

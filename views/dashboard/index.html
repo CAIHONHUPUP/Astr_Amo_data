@@ -333,8 +333,12 @@ async function bridgeCall(action, payload) {
       try { result = JSON.parse(result); } catch (error) {}
     }
     if (result && typeof result === "object") {
-      if (typeof result.code === "number" && result.code >= 400) {
-        return { __error: result.msg || ("HTTP " + result.code) };
+      // 后端用 code:1 表示业务失败；以前只把 >=400 当错误，解绑/绑定/备份失败照样 toast「已完成」。
+      if (typeof result.code === "number" && result.code !== 0) {
+        return { __error: result.msg || ("错误码 " + result.code) };
+      }
+      if (result.status === "error") {
+        return { __error: result.message || "接口返回错误" };
       }
       return result;
     }
@@ -396,6 +400,10 @@ async function call(action, payload) {
     bridged = { __error: error.message };
   }
   if (bridged && !bridged.__error) return bridged;
+  if (WRITE_ACTIONS.has(action) && bridged && /超时/.test(String(bridged.__error))) {
+    // 桥接超时但后端可能已经执行完；再 fetch 重发会让同一个写操作执行两次
+    throw new Error("结果未知（" + action + " 超时），请刷新确认");
+  }
   try {
     return await withTimeout(httpCall(action, body), 15000, action);
   } catch (error) {
@@ -638,10 +646,14 @@ async function openPerson(pid) {
       unbind.textContent = "解绑";
       unbind.addEventListener("click", async () => {
         if (!confirm("解绑后它单独算一个人，聊天记录不会删。继续？")) return;
-        await call("person/unlink", { platform: link.platform, uid: link.uid });
-        toast("已解绑");
-        openPerson(pid);
-        loadPersons();
+        try {
+          await call("person/unlink", { platform: link.platform, uid: link.uid });
+          toast("已解绑");
+          openPerson(pid);
+          loadPersons();
+        } catch (error) {
+          toast("解绑失败：" + error.message, true);
+        }
       });
       row.appendChild(text); row.appendChild(unbind);
       linkBox.appendChild(row);
@@ -686,11 +698,15 @@ document.getElementById("btnPersonLink").addEventListener("click", async () => {
   const uid = (document.getElementById("linkUid").value || "").trim();
   if (!currentPid) { toast("先在上面点一个人", true); return; }
   if (!uid) { toast("填一下要绑定的 uid", true); return; }
-  await call("person/link", { platform: platform, uid: uid, pid: currentPid });
-  toast("已绑定");
-  document.getElementById("linkUid").value = "";
-  openPerson(currentPid);
-  loadPersons();
+  try {
+    await call("person/link", { platform: platform, uid: uid, pid: currentPid });
+    toast("已绑定");
+    document.getElementById("linkUid").value = "";
+    openPerson(currentPid);
+    loadPersons();
+  } catch (error) {
+    toast("绑定失败：" + error.message, true);
+  }
 });
 
 document.getElementById("btnPersonMerge").addEventListener("click", async () => {
@@ -698,11 +714,15 @@ document.getElementById("btnPersonMerge").addEventListener("click", async () => 
   if (!currentPid || !dropPid) { toast("先在上面点一个人，再填要并进来的 pid", true); return; }
   if (dropPid === currentPid) { toast("不能并到自己", true); return; }
   if (!confirm("合并后对方那条会被删掉，身份和记录都并到当前这条。继续？")) return;
-  const result = await call("person/merge", { keep_pid: currentPid, drop_pid: dropPid });
-  toast(result.msg || "已合并");
-  document.getElementById("mergePid").value = "";
-  openPerson(currentPid);
-  loadPersons();
+  try {
+    const result = await call("person/merge", { keep_pid: currentPid, drop_pid: dropPid });
+    toast(result.msg || "已合并");
+    document.getElementById("mergePid").value = "";
+    openPerson(currentPid);
+    loadPersons();
+  } catch (error) {
+    toast("合并失败：" + error.message, true);
+  }
 });
 
 /* ---------- 关系图谱（3D 神经元球，纯 canvas，无外部依赖） ----------
@@ -1217,7 +1237,9 @@ async function loadBackups() {
 document.getElementById("btnBackupNow").addEventListener("click", async () => {
   try {
     const res = await call("backup/now", {});
-    toast("已备份：" + ((res && res.data && res.data.name) || ""));
+    const name = (res && res.data && res.data.name) || "";
+    if (!name) throw new Error("后端没有返回备份文件名");
+    toast("已备份：" + name);
     loadBackups();
   } catch (error) { toast("备份失败：" + error.message, true); }
 });
