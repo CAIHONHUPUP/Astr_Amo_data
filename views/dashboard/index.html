@@ -709,18 +709,31 @@ document.getElementById("btnPersonMerge").addEventListener("click", async () => 
    和「我想永远陪伴你」的陪伴面板同一套渲染：球面撒点 + 3D 力导向 + 透视投影，
    拖动旋转、滚轮缩放、双击回正，远的线淡、近的线亮，节点带辉光。
    这里只是只读展示，增删改仍在陪伴面板里做。 */
-const REL_COLORS = {
-  家人: "#d98c8c", 恋人: "#e06a9a", 朋友: "#7aa8e0", 同事: "#6fc0a8",
-  同学: "#c9a24d", 熟人: "#9b8fd0", 陌生人: "#9aa0a6", 仇人: "#c0504d",
+// 和「陪伴」面板完全一致的五档：仇人黑、抵触黄、普通白、熟识紫、恋人粉。
+const NEURON_TIERS = ["仇恨", "抵触", "普通", "熟识", "恋人"];
+const NEURON_COLORS = {
+  仇恨: "#1f1f1f", 抵触: "#e0b341", 普通: "#ffffff",
+  熟识: "#9b8fd0", 恋人: "#e06a9a",
 };
-const REL_RANK = { 家人: 5, 恋人: 6, 朋友: 4, 同事: 3, 同学: 3, 熟人: 2, 陌生人: 1, 仇人: 4 };
+const NEURON_STROKES = { 普通: "#cfc9d8" };
+const REL_RANK = { 仇恨: 0, 抵触: 1, 普通: 2, 熟识: 3, 恋人: 4 };
+
+function neuronTier(relation) {
+  const value = String(relation || "").trim();
+  if (value === "仇人" || value === "仇恨") return "仇恨";
+  if (value === "抵触") return "抵触";
+  if (value === "恋人" || value === "相恋") return "恋人";
+  if (value === "熟人" || value === "熟识") return "熟识";
+  if (["家人", "朋友", "同事", "同学"].includes(value)) return "熟识";
+  return "普通";
+}
 let graphState = null;
 let relGraphRaf = 0;
 let relHoverId = "";
 const relCamera = { yaw: 0.35, pitch: -0.2, distance: 0, auto: true };
 
 function relColor(relation) {
-  return REL_COLORS[relation] || "#9aa0a6";
+  return NEURON_COLORS[neuronTier(relation)] || NEURON_COLORS["普通"];
 }
 
 function relThemeColor() {
@@ -737,9 +750,11 @@ function buildGraph(items) {
     if (!a || !b) return;
     if (!nodes.has(a)) nodes.set(a, { id: a, name: edge.a_name || a, relation: "", degree: 0 });
     if (!nodes.has(b)) nodes.set(b, { id: b, name: edge.b_name || b, relation: "", degree: 0 });
-    const relation = edge.relation || "朋友";
+    // 画像里手设的关系优先，其次才是关系边自己的 relation；
+    // 统一折算成五档，免得数据面板和陪伴面板显示两套词。
+    const relation = neuronTier(edge.profile_relation || edge.relation || "普通");
     edges.push({ a, b, relation });
-    const rank = REL_RANK[relation] || 3;
+    const rank = REL_RANK[relation] || 2;
     [a, b].forEach((id) => {
       const node = nodes.get(id);
       node.degree += 1;
@@ -861,7 +876,7 @@ function drawGraph(ctx, graph, width, height, camera, hoverId, labelColor) {
     const active = node.id === activeId;
     const scale = Math.max(0.45, node.pscale);
     const radius = (active ? 9 : node.id === "bot" ? 7.5 : 5.5) * scale;
-    const color = node.id === "bot" ? "#d4578a" : relColor(node.relation);
+    const color = node.id === "bot" ? "#e06a9a" : relColor(node.relation);
     const glow = ctx.createRadialGradient(node.px, node.py, 0, node.px, node.py, radius * 3.4);
     glow.addColorStop(0, color);
     glow.addColorStop(0.35, color);
@@ -933,9 +948,8 @@ function renderGraph(items) {
   settleGraph(graph, iterations);
 
   if (legend) {
-    const kinds = [...new Set(graph.edges.map((edge) => edge.relation))];
     legend.textContent = "";
-    kinds.forEach((kind) => {
+    NEURON_TIERS.forEach((kind) => {
       const span = document.createElement("span");
       span.style.cssText = "display:inline-block;margin-right:10px";
       const dot = document.createElement("i");

@@ -65,7 +65,7 @@ except ImportError:  # 单文件加载时的兜底
             return ""
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.5.0"
+PLUGIN_VERSION = "2.5.2"
 DEFAULT_BOT_ID = "default"
 
 
@@ -879,13 +879,44 @@ class AmoDataPlugin(Star):
         items = self.store.list_relations(bot_id, uid)
         # 面板上直接显名字，不要只给一串 uid
         names = {}
+        profiles = []
         try:
-            for row in self.store.list_profiles(bot_id, "", 500):
+            profiles = self.store.list_profiles(bot_id, "", 500)
+            for row in profiles:
                 key = str(row.get("uid") or "")
                 if key:
                     names[key] = str(row.get("name") or row.get("alias") or "")
         except Exception:
             names = {}
+        names.setdefault("bot", "你")
+
+        # 画像里显式设过的关系也进图：不然把对方设成「恋人」，
+        # 图上还停在自动沉淀出来的「熟人」。
+        profile_rel = {}
+        for row in profiles:
+            key = str(row.get("uid") or "")
+            rel = str(row.get("relation") or "").strip()
+            if key and rel and rel not in ("普通",):
+                profile_rel[key] = rel
+        if profile_rel:
+            pairs = {}
+            for item in items:
+                pairs[frozenset((str(item.get("a_uid") or ""), str(item.get("b_uid") or "")))] = item
+            for key, rel in profile_rel.items():
+                if key in ("bot", "self"):
+                    continue
+                item = pairs.get(frozenset(("bot", key)))
+                if item is not None:
+                    item["relation"] = rel
+                    item["note"] = "画像：关系字段"
+                    item["profile_relation"] = rel
+                else:
+                    items.append({
+                        "a_uid": "bot", "b_uid": key, "relation": rel,
+                        "note": "画像：关系字段", "profile_relation": rel,
+                        "a_name": names.get("bot"), "b_name": names.get(key) or key,
+                    })
+
         for item in items:
             for side in ("a", "b"):
                 key = str(item.get(side + "_uid") or "")
