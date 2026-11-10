@@ -29,6 +29,11 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
+    from . import clock as _clock
+except Exception:
+    import clock as _clock
+
+try:
     from astrbot.api import logger
 except Exception:  # 单测/纯逻辑场景允许脱离 AstrBot 运行
     import logging
@@ -2206,7 +2211,7 @@ class DataStore:
         只返回"哪一层有东西、各有多少条"，不返回正文——这是分层检索的前三级。
         """
         where, params = self._msg_filters(bot_id, umo, uid)
-        sql = ("SELECT strftime('{fmt}', created_at, 'unixepoch', 'localtime') AS bucket, "
+        sql = ("SELECT strftime('{fmt}', created_at, 'unixepoch', '{tz}') AS bucket, "
                "COUNT(*) AS n FROM messages") + where
         if start:
             sql += " AND created_at>=?"
@@ -2215,13 +2220,13 @@ class DataStore:
             sql += " AND created_at<?"
             params.append(int(end))
         if year:
-            sql += " AND strftime('%Y', created_at, 'unixepoch', 'localtime')=?"
+            sql += " AND strftime('%Y', created_at, 'unixepoch', '{tz}')=?"
             params.append(str(year))
         if year and month:
-            sql += " AND strftime('%m', created_at, 'unixepoch', 'localtime')=?"
+            sql += " AND strftime('%m', created_at, 'unixepoch', '{tz}')=?"
             params.append(str(month))
         if year and month and day:
-            sql += " AND strftime('%d', created_at, 'unixepoch', 'localtime')=?"
+            sql += " AND strftime('%d', created_at, 'unixepoch', '{tz}')=?"
             params.append(str(day))
         if year and month and day:
             fmt = "%H"
@@ -2233,7 +2238,7 @@ class DataStore:
             fmt = "%Y"
         sql += " GROUP BY bucket ORDER BY bucket"
         with self.lock:
-            rows = self.conn.execute(sql.format(fmt=fmt), params).fetchall()
+            rows = self.conn.execute(sql.format(fmt=fmt, tz=_clock.sql_offset_modifier()), params).fetchall()
         return {str(row["bucket"]): int(row["n"]) for row in rows}
 
     def messages_in_span(self, bot_id: str, start: int, end: int,
@@ -2341,7 +2346,7 @@ class DataStore:
             ).fetchall()
             buckets: Dict[Any, List[sqlite3.Row]] = {}
             for row in rows:
-                day = time.strftime("%Y-%m-%d", time.localtime(int(row["created_at"])))
+                day = _clock.from_timestamp(row["created_at"]).strftime("%Y-%m-%d")
                 buckets.setdefault((str(row["umo"]), day), []).append(row)
             for (umo, day), items in buckets.items():
                 speakers = []
@@ -2712,7 +2717,7 @@ class DataStore:
         """把当前 SQLite 拷贝一份到 dest_dir，并只保留最近 keep 份。"""
         dest_dir = str(dest_dir)
         os.makedirs(dest_dir, exist_ok=True)
-        stem = "amo_data-%s" % datetime.now().strftime("%Y%m%d-%H%M%S")
+        stem = "amo_data-%s" % _clock.now().strftime("%Y%m%d-%H%M%S")
         name = stem + ".db"
         index = 1
         while os.path.exists(os.path.join(dest_dir, name)):

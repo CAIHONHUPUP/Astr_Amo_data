@@ -49,6 +49,11 @@ except ImportError:  # 单文件加载时的兜底
     from store import DataStore  # type: ignore
 
 try:
+    from . import clock as _clock
+except Exception:
+    import clock as _clock
+
+try:
     from .time_query import parse_time_span, describe_span
 except ImportError:  # 单文件加载时的兜底
     try:
@@ -60,7 +65,7 @@ except ImportError:  # 单文件加载时的兜底
             return ""
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.4.12"
+PLUGIN_VERSION = "2.4.14"
 DEFAULT_BOT_ID = "default"
 
 
@@ -420,6 +425,12 @@ class AmoDataPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         self.config = config or {}
+        # 时区：服务器常在 UTC 跑，按配置时区算「今天/昨天/现在」，否则日期会错一天
+        try:
+            self.timezone_name = _clock.configure(str(self.config.get("timezone") or "Asia/Shanghai"))
+            logger.info("[amo_data] 时区: %s" % self.timezone_name)
+        except Exception:
+            self.timezone_name = ""
         self.plugin_dir = os.path.dirname(os.path.abspath(__file__))
         data_dir = str(getattr(self, "data_dir", "") or "").strip()
         if not data_dir:
@@ -447,7 +458,7 @@ class AmoDataPlugin(Star):
         if not self._cfg_bool("backup_daily", True):
             return ""
         import datetime as _dt
-        day = _dt.date.today().strftime("%Y-%m-%d")
+        day = _clock.today().strftime("%Y-%m-%d")
         key = "backup_day:" + day
         try:
             if self.store.cache_get(bot_id, key):
@@ -466,7 +477,7 @@ class AmoDataPlugin(Star):
     async def _maybe_weekly_cleanup(self, bot_id: str) -> dict:
         """每周只跑一次：合并同天摘要、近重复去重、归档低价值老记忆。"""
         import datetime as _dt
-        week = _dt.date.today().strftime("%G-W%V")
+        week = _clock.today().strftime("%G-W%V")
         key = "cleanup_week:" + week
         try:
             if self.store.cache_get(bot_id, key):

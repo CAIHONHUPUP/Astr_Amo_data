@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.4.14（时区修复：按天分组 / 时间检索不再错一天）
+
+- 根因：容器 `TZ=UTC`，`store.py` 里 SQLite 的 `'localtime'` 和 `time_query.py` 的
+  `datetime.now()` 都按服务器本地时区算，北京时间 03:56 的消息会被分到前一天，
+  时间检索的「昨天下午」也会整体偏 8 小时；
+- 新增 `clock.py`（和陪伴插件同一份）：启动时按配置 `timezone`（默认 `Asia/Shanghai`）
+  设置进程时区；另外 SQL 里不再用 `'localtime'`，改成按配置时区算出来的
+  `"+480 minutes"` 偏移，即使 `tzset` 在某个平台不生效也不会分错天；
+- `time_query.py`、`store.py` 里的裸 `datetime.now()`、`time.localtime()`、`date.today()`
+  全部收敛到 `clock`；
+- 新增 `tests/test_clock.py`：模拟 `TZ=UTC` 容器，验证 8 小时偏移、`.timestamp()` 对齐、
+  SQL 分桶正确，以及源码守卫。
+
 ## 2.4.12（关系图改成 3D 神经元球）
 
 ### 和陪伴面板同一套渲染

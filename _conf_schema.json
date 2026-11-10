@@ -1,4 +1,10 @@
 {
+  "timezone": {
+    "type": "string",
+    "description": "时区",
+    "default": "Asia/Shanghai",
+    "hint": "「今天/昨天」、每日备份、每周清理、按天分组都按这个时区算。服务器跑在 UTC 时务必保持 Asia/Shanghai，否则日期会错一天。填 auto 表示跟随系统。"
+  },
   "bot_id": {
     "type": "string",
     "description": "数据归属的机器人 ID",

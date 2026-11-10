@@ -15,6 +15,11 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
 
+try:
+    from . import clock as _clock
+except Exception:
+    import clock as _clock
+
 WEEKDAY_NAMES = {
     "一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6,
     "1": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5, "7": 6,
@@ -87,7 +92,7 @@ def parse_time_span(text: Any, now: Optional[datetime] = None) -> Optional[Dict[
     raw = str(text or "").strip()
     if not raw:
         return None
-    now = now or datetime.now()
+    now = now or _clock.now()
     # 先把「六号/十一点」这类中文数字换成阿拉伯数字，后面的正则就只认数字了
     raw = normalize_numbers(raw)
     lowered = raw.lower()

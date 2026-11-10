@@ -76,6 +76,7 @@ await plugin.mem.cache_set(bot_id, "schedule:2026-11-09", data, ttl=86400)
 
 ## 版本
 
+- 2.4.14：时区统一到配置时区（UTC 服务器下按天分组 / 时间检索不再错一天）。
 - 2.4.12：关系图改成 3D 神经元球（拖动旋转 / 滚轮缩放 / 双击回正 / 点击选中）。
 - 2.4.10：召回候选池分层（recall_recent_pool）、消息去重、时间检索增强，重新提交上架。
 - 2.4.8：仓库改名为 Astrbot_Amo_data（插件 ID 仍是 Astr_Amo_data），链接同步。
