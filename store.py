@@ -2005,6 +2005,23 @@ class DataStore:
             return tens * 10 + ones
         return cls._CN_NUM.get(raw, 0)
 
+    @staticmethod
+    def _epoch(dt):
+        """naive 本地时间 → 秒；按插件配置的时区算，不跟服务器时区跑。"""
+        try:
+            zone = _clock.get_zone(_clock.current_name())
+        except Exception:
+            zone = None
+        if zone is not None:
+            try:
+                return int(dt.replace(tzinfo=zone).timestamp())
+            except Exception:
+                pass
+        try:
+            return int(dt.timestamp())
+        except Exception:
+            return 0
+
     @classmethod
     def _day_window(cls, day, text: str):
         """一天的范围；话里带「下午/晚上」就只取那一段。"""
@@ -2023,7 +2040,7 @@ class DataStore:
         """
         from datetime import datetime as _dt, timedelta as _td
         text = str(query or "")
-        now = _dt.now()
+        now = _clock.now()
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         day = None
         if "大前天" in text:
@@ -2036,7 +2053,7 @@ class DataStore:
             day = today
         if day is not None:
             start, end = cls._day_window(day, text)
-            return int(start.timestamp()), int(end.timestamp())
+            return cls._epoch(start), cls._epoch(end)
 
         # 上周三 / 这周五 / 礼拜天
         m = re.search(r"(上上|上|这|本)?\s*(周|星期|礼拜)\s*([一二三四五六日天1-7])", text)
@@ -2052,7 +2069,7 @@ class DataStore:
                 elif target > today:
                     target -= _td(days=7)
                 start, end = cls._day_window(target, text)
-                return int(start.timestamp()), int(end.timestamp())
+                return cls._epoch(start), cls._epoch(end)
 
         # 11月6号 / 11月6号晚上
         m = re.search(r"(?:(\d{4})\s*年)?\s*(\d{1,2}|[一二三四五六七八九十]{1,3})\s*月"
@@ -2073,7 +2090,7 @@ class DataStore:
                         target = None
             if target is not None:
                 start, end = cls._day_window(target, text)
-                return int(start.timestamp()), int(end.timestamp())
+                return cls._epoch(start), cls._epoch(end)
 
         # 六号 / 6号（没写月份：本月还没到就算上个月）
         m = re.search(r"(?<!\d)(\d{1,2}|[一二三四五六七八九十]{1,3})\s*[号日]", text)
@@ -2092,27 +2109,27 @@ class DataStore:
                         target = None
                 if target is not None:
                     start, end = cls._day_window(target, text)
-                    return int(start.timestamp()), int(end.timestamp())
+                    return cls._epoch(start), cls._epoch(end)
 
         if "上个月" in text or "上月" in text:
             first = today.replace(day=1)
             start = (first - _td(days=1)).replace(day=1)
-            return int(start.timestamp()), int(first.timestamp())
+            return cls._epoch(start), cls._epoch(first)
         if "去年" in text:
             start = _dt(today.year - 1, 1, 1)
             end = _dt(today.year, 1, 1)
-            return int(start.timestamp()), int(end.timestamp())
+            return cls._epoch(start), cls._epoch(end)
         if "今年" in text:
-            return int(_dt(today.year, 1, 1).timestamp()), int((now + _td(seconds=1)).timestamp())
+            return cls._epoch(_dt(today.year, 1, 1)), cls._epoch(now + _td(seconds=1))
 
         m = re.search(r"最近\s*(\d+)\s*(天|日|小时|分钟)", text)
         if m:
             amount = max(1, int(m.group(1)))
             if m.group(2) in ("小时", "分钟"):
                 unit = _td(hours=1) if m.group(2) == "小时" else _td(minutes=1)
-                return int((now - unit * amount).timestamp()), int((now + _td(seconds=1)).timestamp())
+                return cls._epoch(now - unit * amount), cls._epoch(now + _td(seconds=1))
             start = today - _td(days=amount - 1)
-            return int(start.timestamp()), int((today + _td(days=1)).timestamp())
+            return cls._epoch(start), cls._epoch(today + _td(days=1))
         return 0, 0
 
     @classmethod

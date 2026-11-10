@@ -9,6 +9,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from store import DataStore  # noqa: E402
+import clock as amo_clock  # noqa: E402
 
 BOT = "b"
 UID = "u"
@@ -73,13 +74,29 @@ class SummaryMergeKeepsTextTests(unittest.TestCase):
 
 
     def test_yesterday_question_pulls_that_day_digest(self):
-        from datetime import date, timedelta
-        tag = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+        from datetime import timedelta
+        # 「昨天」按插件配置时区算，不能用系统 date.today()：CI 是 UTC，
+        # 北京时间 00:00-08:00 这段系统日期还停在"今天"，测试会假失败。
+        tag = (amo_clock.today() - timedelta(days=1)).strftime("%Y-%m-%d")
         self.store.remember(BOT, UID, "【" + tag + "】他当天在家修 bug，中午吃了猪肉粽。",
                             kind="daily_digest", importance=0.7)
         rows = self.store.recall(BOT, UID, "昨天我们主要干了什么", limit=3)
         self.assertTrue(rows)
         self.assertEqual(rows[0]["kind"], "daily_digest")
+
+    def test_time_window_uses_configured_timezone(self):
+        """「昨天」的起点必须是配置时区的零点，不是服务器时区的零点。"""
+        from datetime import datetime, timedelta
+        amo_clock.configure("Asia/Shanghai")
+        try:
+            start, _ = DataStore._time_window("昨天")
+            zone = amo_clock.get_zone("Asia/Shanghai")
+            expected = datetime.combine(
+                amo_clock.today() - timedelta(days=1), datetime.min.time()
+            ).replace(tzinfo=zone).timestamp()
+            self.assertEqual(start, int(expected))
+        finally:
+            amo_clock.restore()
 
     def test_merged_summary_keeps_all_text(self):
         a = self.store.remember(BOT, UID, "2026-11-08 上午和主人聊了修 bug。", kind="conversation_summary")
