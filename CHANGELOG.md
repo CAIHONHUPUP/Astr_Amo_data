@@ -27,7 +27,15 @@
   不再有 no-redef；
 - 新增 `tools/mypy_check.py` + `mypy.ini`：把插件目录当包检查，CI 覆盖 **13 个源文件，0 错误**；
 - CI 增加类型检查与覆盖率两步；`requirements-dev.txt` 补 `mypy` / `coverage`；
-- `.coveragerc` 覆盖率底线 **50%**（源码实测 57%），`store_types.py` 是纯类型文件不参与统计。
+- `.coveragerc` 覆盖率底线 **65%**（源码实测 68%），`store_types.py` 是纯类型文件不参与统计。
+
+### 测试补强：main.py 从 0 覆盖到 68%
+
+- 新增 `tests/test_memory_api.py`（24 项）：用真实临时库把 `MemoryAPI` 的画像/记忆/关系/缓存/
+  消息/快照/备份/人物/日志/统计逐条跑一遍，并覆盖"store 抛异常时返回默认值"的兜底路径；
+- 插件侧补配置读取（`_cfg_*` / `bot_id` / 保留天数）、Web 路由注册的冒烟；
+- 新增测试用 `tests/astrbot_stub.py`（纯单测不依赖 AstrBot 安装）；
+- 总量 **147 → 171 项**，覆盖率 **57% → 68%**（`main.py` 38%，其余存储模块 80%+）。
 
 
 ### 跨平台归一（配合陪伴插件）
