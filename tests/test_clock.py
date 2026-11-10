@@ -78,7 +78,9 @@ class ClockTests(unittest.TestCase):
 
 class SourceGuardTests(unittest.TestCase):
     def test_no_bare_localtime_or_now(self):
-        for name in ("store.py", "time_query.py", "main.py"):
+        names = ["store.py", "time_query.py", "main.py", "store_util.py", "store_schema.py",
+                 "store_people.py", "store_memory.py", "store_messages.py", "store_logs.py"]
+        for name in names:
             with open(os.path.join(ROOT, name), encoding="utf-8") as fp:
                 body = fp.read()
             self.assertEqual(body.count("'localtime'"), 0, name + " 还在用 SQLite 的 'localtime'")

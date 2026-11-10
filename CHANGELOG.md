@@ -2,6 +2,24 @@
 
 ## 未发布（基于 2.5.0）
 
+### 存储层拆分：store.py 2,913 行 → 7 个模块
+
+- `store.py` **2,913 → 219 行**，只保留连接/设置/关闭和组合：
+  `class DataStore(SchemaMixin, PeopleMixin, MemoryMixin, MessagesMixin, LogsMixin)`；
+- 拆出：
+  `store_util.py`（388 行，平台归一/BM25/遗忘曲线/时间窗等纯函数与常量）、
+  `store_schema.py`（493 行，建表/迁移/备份/快照/统计）、
+  `store_people.py`（545 行，画像/身份归一/人物合并）、
+  `store_memory.py`（812 行，写入/去重/取代/压缩/召回/向量）、
+  `store_messages.py`（527 行，消息/时间窗/分层总结/清理）、
+  `store_logs.py`（190 行，关系/缓存/操作日志）；
+- **对外 API 不变**：`from store import DataStore`、`normalize_platform`、`_slot_facts`、
+  `platform_label`、`platform_of_umo` 等旧入口仍然可用（`store.py` 再导出，`__all__` 保留）；
+- 行为不变：拆分只移动方法，数据表结构、检索算法、SQL 全都没改；
+- 验证：`pytest tests` **147 项**（7 项 Windows 无 `tzset` 跳过）全过、`pyflakes` 0、覆盖率 **86%**；
+- `test_clock` 的源码守卫（禁止 `datetime.now()` / `'localtime'`）扩展到全部 store_* 模块。
+
+
 ### 跨平台归一（配合陪伴插件）
 
 - 新增 `normalize_platform()`：`qq`/`onebot`/`feishu`/机器人名前缀 → 标准平台名；
