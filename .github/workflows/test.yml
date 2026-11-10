@@ -1,5 +1,7 @@
 name: tests
+
 on: [push, pull_request]
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -9,4 +11,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements-dev.txt
-      - run: python -m pytest tests -q
+      - name: Type check
+        run: python tools/mypy_check.py
+      - name: Run tests
+        run: coverage run -m pytest tests -q
+      - name: Coverage floor
+        run: coverage report

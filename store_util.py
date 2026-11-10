@@ -6,35 +6,46 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import hashlib
 import math
 import re
 import struct
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
-try:
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from . import clock as _clock
-except Exception:
-    import clock as _clock
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:
+        from . import clock as _clock
+    except Exception:
+        import clock as _clock
 
 # 时间解析必须两种导入都试：AstrBot 以 data.plugins.Astr_Amo_data 包方式加载时，
 # 函数里的顶层 from time_query import ... 会 ModuleNotFoundError、被 except 吞掉，
 # span 恒为 None，于是「问昨天 → 拉当天日总结」的整段逻辑从来没执行过。
-try:
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from .time_query import parse_time_span as _parse_time_span
-except Exception:
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
     try:
-        from time_query import parse_time_span as _parse_time_span
+        from .time_query import parse_time_span as _parse_time_span
     except Exception:
-        _parse_time_span = None
+        try:
+            from time_query import parse_time_span as _parse_time_span
+        except Exception:
+            _parse_time_span = None
 
-try:
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from astrbot.api import logger
-except Exception:  # 单测/纯逻辑场景允许脱离 AstrBot 运行
-    import logging
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:
+        from astrbot.api import logger
+    except Exception:  # 单测/纯逻辑场景允许脱离 AstrBot 运行
+        import logging
 
-    logger = logging.getLogger("amo_data")
+        logger = logging.getLogger("amo_data")
 
 
 def _now() -> int:
@@ -213,7 +224,7 @@ def _informative_terms(text: Any) -> List[str]:
     ]
 
 
-def _jaccard(a: List[str], b: List[str]) -> float:
+def _jaccard(a: Iterable[str], b: Iterable[str]) -> float:
     sa, sb = set(a), set(b)
     if not sa or not sb:
         return 0.0

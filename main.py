@@ -23,6 +23,9 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+from typing import Optional
+
 import asyncio
 import json
 import os
@@ -30,39 +33,54 @@ import os
 from astrbot.api import logger
 from astrbot.api.star import Context, Star
 
-try:  # AstrBot 4.x
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from astrbot.api.event import filter  # noqa: F401
-except Exception:  # pragma: no cover - 老版本没有该模块时不影响加载
-    filter = None
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:  # AstrBot 4.x
+        from astrbot.api.event import filter  # noqa: F401
+    except Exception:  # pragma: no cover - 老版本没有该模块时不影响加载
+        filter = None
 
-try:
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from astrbot.api.web import request as web_request
-except Exception:  # pragma: no cover
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
     try:
-        from quart import request as web_request  # type: ignore
-    except Exception:
-        web_request = None
+        from astrbot.api.web import request as web_request
+    except Exception:  # pragma: no cover
+        try:
+            from quart import request as web_request  # type: ignore
+        except Exception:
+            web_request = None
 
-try:
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from .store import DataStore
-except ImportError:  # 单文件加载时的兜底
-    from store import DataStore  # type: ignore
-
-try:
-    from . import clock as _clock
-except Exception:
-    import clock as _clock
-
-try:
-    from .time_query import parse_time_span, describe_span
-except ImportError:  # 单文件加载时的兜底
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
     try:
-        from time_query import parse_time_span, describe_span  # type: ignore
-    except Exception:  # pragma: no cover - 极端情况下退化成"不识别时间"
-        def parse_time_span(*args, **kwargs):
-            return None
-        def describe_span(*args, **kwargs):
-            return ""
+        from .store import DataStore
+    except ImportError:  # 单文件加载时的兜底
+        from store import DataStore  # type: ignore
+
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
+    from . import clock as _clock
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:
+        from . import clock as _clock
+    except Exception:
+        import clock as _clock
+
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
+    from .time_query import parse_time_span, describe_span
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:
+        from .time_query import parse_time_span, describe_span
+    except ImportError:  # 单文件加载时的兜底
+        try:
+            from time_query import parse_time_span, describe_span  # type: ignore
+        except Exception:  # pragma: no cover - 极端情况下退化成"不识别时间"
+            def parse_time_span(*args, **kwargs):
+                return None
+            def describe_span(*args, **kwargs):
+                return ""
 
 PLUGIN_NAME = "Astr_Amo_data"
 PLUGIN_VERSION = "2.5.0"
@@ -422,7 +440,7 @@ class MemoryAPI:
 
 
 class AmoDataPlugin(Star):
-    def __init__(self, context: Context, config: dict = None):
+    def __init__(self, context: Context, config: Optional[dict] = None):
         super().__init__(context)
         self.config = config or {}
         # 时区：服务器常在 UTC 跑，按配置时区算「今天/昨天/现在」，否则日期会错一天
@@ -565,7 +583,7 @@ class AmoDataPlugin(Star):
         return max(1, self._cfg_int("log_days", 7))
 
     # ---------- 工具 ----------
-    def _bot_id(self, payload: dict = None, write: bool = False) -> str:
+    def _bot_id(self, payload: Optional[dict] = None, write: bool = False) -> str:
         """读：留空表示所有 bot；写：留空时自动落到唯一的 bot，多个 bot 才用 default。"""
         data = payload or {}
         value = str(data.get("bot_id") or "").strip()

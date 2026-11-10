@@ -11,14 +11,19 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
 
-try:
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from . import clock as _clock
-except Exception:
-    import clock as _clock
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:
+        from . import clock as _clock
+    except Exception:
+        import clock as _clock
 
 WEEKDAY_NAMES = {
     "一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6,
@@ -156,7 +161,9 @@ def parse_time_span(text: Any, now: Optional[datetime] = None) -> Optional[Dict[
         else:
             month_only = True  # 「11月」= 整月，不是「今天这一天」
     elif re.search(r"(\d{1,2})\s*[号日]", raw) and not re.search(r"(\d{1,2})\s*点", raw):
-        day = int(re.search(r"(\d{1,2})\s*[号日]", raw).group(1))
+        day_match = re.search(r"(\d{1,2})\s*[号日]", raw)
+        if day_match:
+            day = int(day_match.group(1))
 
     if re.search(r"(上个月|上月)", raw):
         year = year or now.year

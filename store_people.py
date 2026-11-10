@@ -2,13 +2,15 @@
 """画像 / 身份归一 / 人物合并 / 人物上下文。"""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
 import sqlite3
 
-try:
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from .store_util import (
         _bot_filter,
         _clean,
@@ -17,18 +19,34 @@ try:
         _unique_labels,
         platform_label,
     )
-except ImportError:  # 直接按文件加载时
-    from store_util import (
-        _bot_filter,
-        _clean,
-        _name_key,
-        _now,
-        _unique_labels,
-        platform_label,
-    )
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:
+        from .store_util import (
+            _bot_filter,
+            _clean,
+            _name_key,
+            _now,
+            _unique_labels,
+            platform_label,
+        )
+    except ImportError:  # 直接按文件加载时
+        from store_util import (
+            _bot_filter,
+            _clean,
+            _name_key,
+            _now,
+            _unique_labels,
+            platform_label,
+        )
 
 
-class PeopleMixin:
+if TYPE_CHECKING:
+    from .store_types import StoreLike as _StoreBase
+else:  # 运行时用 object：协议里的声明不能进 MRO，否则会挡掉别的 mixin 的真实实现
+    _StoreBase = object
+
+
+class PeopleMixin(_StoreBase):
     def get_profile(self, bot_id: str, uid: str) -> Dict[str, Any]:
         with self.lock:
             row = self.conn.execute(

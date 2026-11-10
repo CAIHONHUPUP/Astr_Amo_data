@@ -1,0 +1,14 @@
+[run]
+source = .
+omit =
+    tests/*
+    tools/*
+    __pycache__/*
+    _test_tmp/*
+    store_types.py
+
+[report]
+# 类型检查之外再加覆盖率底线：源码实测 56%+，先按 50% 卡住，只许往上调
+fail_under = 50
+show_missing = True
+skip_covered = True

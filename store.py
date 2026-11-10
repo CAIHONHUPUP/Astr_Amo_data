@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from typing import Any
 from typing import Dict
 from typing import List
@@ -19,7 +21,7 @@ import queue
 import sqlite3
 import threading
 
-try:
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from .store_schema import SchemaMixin
     from .store_people import PeopleMixin
     from .store_memory import MemoryMixin
@@ -63,50 +65,95 @@ try:
         platform_label,
         platform_of_umo,
     )
-except ImportError:  # 直接按文件加载时
-    from store_schema import SchemaMixin
-    from store_people import PeopleMixin
-    from store_memory import MemoryMixin
-    from store_messages import MessagesMixin
-    from store_logs import LogsMixin
-    from store_util import (
-        DEFAULT_SETTINGS,
-        KNOWN_PLATFORMS,
-        PLATFORM_ALIASES,
-        PLATFORM_LABELS,
-        RECALL_HALF_LIFE_DAYS,
-        RECALL_IMPORTANCE_DECAY,
-        RECALL_MIN_REL,
-        RECALL_POOL,
-        RECALL_W_FRESH,
-        RECALL_W_IMPORTANCE,
-        RECALL_W_REL,
-        SLOT_PATTERNS,
-        STOP_BIGRAMS,
-        STOP_CHARS,
-        _bm25_scores,
-        _bot_filter,
-        _clean,
-        _clock,
-        _cosine,
-        _freshness,
-        _from_vec,
-        _informative_terms,
-        _jaccard,
-        _name_key,
-        _norm_key,
-        _now,
-        _parse_time_span,
-        _query_chars,
-        _recall_tokens,
-        _slot_facts,
-        _to_vec,
-        _unique_labels,
-        logger,
-        normalize_platform,
-        platform_label,
-        platform_of_umo,
-    )
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:
+        from .store_schema import SchemaMixin
+        from .store_people import PeopleMixin
+        from .store_memory import MemoryMixin
+        from .store_messages import MessagesMixin
+        from .store_logs import LogsMixin
+        from .store_util import (
+            DEFAULT_SETTINGS,
+            KNOWN_PLATFORMS,
+            PLATFORM_ALIASES,
+            PLATFORM_LABELS,
+            RECALL_HALF_LIFE_DAYS,
+            RECALL_IMPORTANCE_DECAY,
+            RECALL_MIN_REL,
+            RECALL_POOL,
+            RECALL_W_FRESH,
+            RECALL_W_IMPORTANCE,
+            RECALL_W_REL,
+            SLOT_PATTERNS,
+            STOP_BIGRAMS,
+            STOP_CHARS,
+            _bm25_scores,
+            _bot_filter,
+            _clean,
+            _clock,
+            _cosine,
+            _freshness,
+            _from_vec,
+            _informative_terms,
+            _jaccard,
+            _name_key,
+            _norm_key,
+            _now,
+            _parse_time_span,
+            _query_chars,
+            _recall_tokens,
+            _slot_facts,
+            _to_vec,
+            _unique_labels,
+            logger,
+            normalize_platform,
+            platform_label,
+            platform_of_umo,
+        )
+    except ImportError:  # 直接按文件加载时
+        from store_schema import SchemaMixin
+        from store_people import PeopleMixin
+        from store_memory import MemoryMixin
+        from store_messages import MessagesMixin
+        from store_logs import LogsMixin
+        from store_util import (
+            DEFAULT_SETTINGS,
+            KNOWN_PLATFORMS,
+            PLATFORM_ALIASES,
+            PLATFORM_LABELS,
+            RECALL_HALF_LIFE_DAYS,
+            RECALL_IMPORTANCE_DECAY,
+            RECALL_MIN_REL,
+            RECALL_POOL,
+            RECALL_W_FRESH,
+            RECALL_W_IMPORTANCE,
+            RECALL_W_REL,
+            SLOT_PATTERNS,
+            STOP_BIGRAMS,
+            STOP_CHARS,
+            _bm25_scores,
+            _bot_filter,
+            _clean,
+            _clock,
+            _cosine,
+            _freshness,
+            _from_vec,
+            _informative_terms,
+            _jaccard,
+            _name_key,
+            _norm_key,
+            _now,
+            _parse_time_span,
+            _query_chars,
+            _recall_tokens,
+            _slot_facts,
+            _to_vec,
+            _unique_labels,
+            logger,
+            normalize_platform,
+            platform_label,
+            platform_of_umo,
+        )
 
 # 旧 API 兼容：常量/纯函数仍从 store 模块直接取（测试和面板都在用）
 __all__ = [
@@ -203,6 +250,7 @@ class DataStore(SchemaMixin, PeopleMixin, MemoryMixin, MessagesMixin, LogsMixin)
             with self.lock:
                 if self._conn is None:
                     self._open()
+        assert self._conn is not None
         return self._conn
     def close(self) -> None:
         with self.lock:

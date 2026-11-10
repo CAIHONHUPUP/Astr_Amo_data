@@ -2,27 +2,42 @@
 """关系网 / 缓存 / 操作日志。"""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from typing import Any
 from typing import Dict
 from typing import List
 import json
 
-try:
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from .store_util import (
         _bot_filter,
         _clean,
         _now,
     )
-except ImportError:  # 直接按文件加载时
-    from store_util import (
-        _bot_filter,
-        _clean,
-        _now,
-    )
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:
+        from .store_util import (
+            _bot_filter,
+            _clean,
+            _now,
+        )
+    except ImportError:  # 直接按文件加载时
+        from store_util import (
+            _bot_filter,
+            _clean,
+            _now,
+        )
 
 
-class LogsMixin:
-    def _display_name(self, bot_id: str, uid: str) -> str:
+if TYPE_CHECKING:
+    from .store_types import StoreLike as _StoreBase
+else:  # 运行时用 object：协议里的声明不能进 MRO，否则会挡掉别的 mixin 的真实实现
+    _StoreBase = object
+
+
+class LogsMixin(_StoreBase):
+    def _display_name(self, bot_id: str, uid: Any) -> str:
         """关系图上的显示名：先画像，再人物卡，最后空。"""
         uid = str(uid or "")
         if not uid:

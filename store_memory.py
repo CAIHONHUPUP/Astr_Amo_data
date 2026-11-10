@@ -2,6 +2,8 @@
 """记忆写入 / 去重 / 取代 / 压缩 / 召回 / 向量。"""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from typing import Any
 from typing import Dict
 from typing import List
@@ -15,7 +17,7 @@ import threading
 import time
 import urllib.request
 
-try:
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from .store_util import (
         RECALL_HALF_LIFE_DAYS,
         RECALL_IMPORTANCE_DECAY,
@@ -41,35 +43,71 @@ try:
         _to_vec,
         logger,
     )
-except ImportError:  # 直接按文件加载时
-    from store_util import (
-        RECALL_HALF_LIFE_DAYS,
-        RECALL_IMPORTANCE_DECAY,
-        RECALL_POOL,
-        RECALL_W_FRESH,
-        RECALL_W_IMPORTANCE,
-        RECALL_W_REL,
-        STOP_BIGRAMS,
-        _bm25_scores,
-        _bot_filter,
-        _clean,
-        _cosine,
-        _freshness,
-        _from_vec,
-        _informative_terms,
-        _jaccard,
-        _norm_key,
-        _now,
-        _parse_time_span,
-        _query_chars,
-        _recall_tokens,
-        _slot_facts,
-        _to_vec,
-        logger,
-    )
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:
+        from .store_util import (
+            RECALL_HALF_LIFE_DAYS,
+            RECALL_IMPORTANCE_DECAY,
+            RECALL_POOL,
+            RECALL_W_FRESH,
+            RECALL_W_IMPORTANCE,
+            RECALL_W_REL,
+            STOP_BIGRAMS,
+            _bm25_scores,
+            _bot_filter,
+            _clean,
+            _cosine,
+            _freshness,
+            _from_vec,
+            _informative_terms,
+            _jaccard,
+            _norm_key,
+            _now,
+            _parse_time_span,
+            _query_chars,
+            _recall_tokens,
+            _slot_facts,
+            _to_vec,
+            logger,
+        )
+    except ImportError:  # 直接按文件加载时
+        from store_util import (
+            RECALL_HALF_LIFE_DAYS,
+            RECALL_IMPORTANCE_DECAY,
+            RECALL_POOL,
+            RECALL_W_FRESH,
+            RECALL_W_IMPORTANCE,
+            RECALL_W_REL,
+            STOP_BIGRAMS,
+            _bm25_scores,
+            _bot_filter,
+            _clean,
+            _cosine,
+            _freshness,
+            _from_vec,
+            _informative_terms,
+            _jaccard,
+            _norm_key,
+            _now,
+            _parse_time_span,
+            _query_chars,
+            _recall_tokens,
+            _slot_facts,
+            _to_vec,
+            logger,
+        )
 
 
-class MemoryMixin:
+if TYPE_CHECKING:
+    from .store_types import StoreLike as _StoreBase
+else:  # 运行时用 object：协议里的声明不能进 MRO，否则会挡掉别的 mixin 的真实实现
+    _StoreBase = object
+
+
+class MemoryMixin(_StoreBase):
+    _emb_thread: Optional[threading.Thread]
+    _emb_down_until: float
+
     def _ensure_emb_worker(self) -> None:
         if self._emb_thread is not None and self._emb_thread.is_alive():
             return

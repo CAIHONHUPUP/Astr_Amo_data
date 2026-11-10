@@ -19,6 +19,16 @@
 - 验证：`pytest tests` **147 项**（7 项 Windows 无 `tzset` 跳过）全过、`pyflakes` 0、覆盖率 **86%**；
 - `test_clock` 的源码守卫（禁止 `datetime.now()` / `'localtime'`）扩展到全部 store_* 模块。
 
+### 类型检查与 CI 门槛（对齐陪伴插件）
+
+- 新增 `store_types.py`：`StoreLike` 协议声明 5 个 mixin 组合后的公共接口；
+  mixin 条件继承协议、运行时继承 `object`，不参与 MRO、不挡真实实现，mypy 的 attr-defined 归零；
+- 双模式导入（包内相对 / 按文件加载）统一成 `if TYPE_CHECKING: ... else: try/except`，
+  不再有 no-redef；
+- 新增 `tools/mypy_check.py` + `mypy.ini`：把插件目录当包检查，CI 覆盖 **13 个源文件，0 错误**；
+- CI 增加类型检查与覆盖率两步；`requirements-dev.txt` 补 `mypy` / `coverage`；
+- `.coveragerc` 覆盖率底线 **50%**（源码实测 57%），`store_types.py` 是纯类型文件不参与统计。
+
 
 ### 跨平台归一（配合陪伴插件）
 

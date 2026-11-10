@@ -16,14 +16,19 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import os
 import time as _time
 from datetime import datetime, timedelta, tzinfo as _tzinfo
 
-try:
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from zoneinfo import ZoneInfo
-except Exception:  # pragma: no cover - 没有 zoneinfo 时走固定偏移兜底
-    ZoneInfo = None
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:
+        from zoneinfo import ZoneInfo
+    except Exception:  # pragma: no cover - 没有 zoneinfo 时走固定偏移兜底
+        ZoneInfo = None
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 _state = {"name": ""}

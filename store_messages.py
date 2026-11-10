@@ -2,14 +2,17 @@
 """消息 / 时间窗 / 分层总结 / 清理。"""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Optional
 from typing import Tuple
 import re
 import sqlite3
 
-try:
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from .store_util import (
         _bot_filter,
         _clean,
@@ -18,18 +21,34 @@ try:
         platform_label,
         platform_of_umo,
     )
-except ImportError:  # 直接按文件加载时
-    from store_util import (
-        _bot_filter,
-        _clean,
-        _clock,
-        _now,
-        platform_label,
-        platform_of_umo,
-    )
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:
+        from .store_util import (
+            _bot_filter,
+            _clean,
+            _clock,
+            _now,
+            platform_label,
+            platform_of_umo,
+        )
+    except ImportError:  # 直接按文件加载时
+        from store_util import (
+            _bot_filter,
+            _clean,
+            _clock,
+            _now,
+            platform_label,
+            platform_of_umo,
+        )
 
 
-class MessagesMixin:
+if TYPE_CHECKING:
+    from .store_types import StoreLike as _StoreBase
+else:  # 运行时用 object：协议里的声明不能进 MRO，否则会挡掉别的 mixin 的真实实现
+    _StoreBase = object
+
+
+class MessagesMixin(_StoreBase):
     def add_message(self, bot_id: str, umo: str, uid: str = "", name: str = "",
                     role: str = "user", content: str = "", platform: str = "",
                     created_at: int = 0, message_id: str = "") -> int:
@@ -86,7 +105,7 @@ class MessagesMixin:
             self.conn.commit()
             return int(cur.lastrowid or 0)
     def messages_since(self, bot_id: str, uid: str = "", since_ts: int = 0,
-                       limit: int = 200, since: int = None,
+                       limit: int = 200, since: Optional[int] = None,
                        umo: str = "") -> List[Dict[str, Any]]:
         """取 since_ts 之后的消息（按时间正序）。
 
@@ -157,6 +176,7 @@ class MessagesMixin:
         now = _dt.now()
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         day = None
+        target: Optional[_dt] = None
         if "大前天" in text:
             day = today - _td(days=3)
         elif "前天" in text:
@@ -494,7 +514,7 @@ class MessagesMixin:
                     value = str(item["uid"] or "")
                     if value:
                         uid_counts[value] = uid_counts.get(value, 0) + 1
-                bucket_uid = max(uid_counts, key=uid_counts.get) if uid_counts else ""
+                bucket_uid = max(uid_counts, key=lambda k: uid_counts[k]) if uid_counts else ""
                 for chunk in chunks:
                     body = " / ".join(
                         ("她：" if str(item["role"]) == "bot" else str(item["name"] or "对方") + "：")
