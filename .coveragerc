@@ -8,7 +8,7 @@ omit =
     store_types.py
 
 [report]
-# 类型检查之外再加覆盖率底线：源码实测 68%+，按 65% 卡住，只许往上调
-fail_under = 65
+# 类型检查之外再加覆盖率底线：补完 API 层测试后实测 85%，按 80% 卡住，只许往上调
+fail_under = 80
 show_missing = True
 skip_covered = True
