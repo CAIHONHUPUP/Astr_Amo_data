@@ -512,12 +512,14 @@ class PeopleMixin(_StoreBase):
             # 她的话：role='bot' + 同一个 pid（跨平台都算），单独限量。
             # 混在一条 SQL 里时她的话会把他的近聊挤出 limit（跨平台块就只剩她的发言）。
             for item in detail.get("links", []) or []:
+                # 按 pid + 平台取，不按 uid：飞书消息可能用归一后的 QQ uid 落库，
+                # 只按 open_id 查会漏掉最新几条，跨平台上下文就只剩旧消息。
                 rows = self.conn.execute(
                     "SELECT platform, uid, name, role, content, created_at, compressed FROM messages "
-                    "WHERE bot_id=? AND pid=? AND platform=? AND uid=? AND role!='bot' "
+                    "WHERE bot_id=? AND pid=? AND platform=? AND role!='bot' "
                     "ORDER BY created_at DESC LIMIT ?",
                     (str(bot_id), int(detail["pid"]), str(item.get("platform") or ""),
-                     str(item.get("uid") or ""), per_platform),
+                     per_platform),
                 ).fetchall()
                 for row in rows:
                     gathered[(row["platform"], row["role"], row["created_at"], row["content"])] = row

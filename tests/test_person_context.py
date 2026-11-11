@@ -64,6 +64,15 @@ class PersonContextTests(unittest.TestCase):
         names = [p["name"] for p in self.store.list_persons(BOT)]
         self.assertEqual(len(names), 1)
 
+    def test_latest_lark_message_with_canonical_uid_is_seen(self):
+        # 飞书消息落库时 uid 可能已归一成 QQ 号；按 open_id 查会漏掉最新消息
+        base = 1_800_000_000
+        self._add("lark", LARK_UID, "飞书旧消息", base)
+        self._add("lark", QQ_UID, "飞书最新消息", base + 100)
+        ctx = self.store.person_context(BOT, "lark", LARK_UID, 6)
+        texts = [m["content"] for m in ctx.get("recent") or []]
+        self.assertIn("飞书最新消息", texts)
+
     def test_unknown_person_returns_empty(self):
         self.assertEqual(self.store.person_context(BOT, "aiocqhttp", "no-such-uid", 6), {})
 
