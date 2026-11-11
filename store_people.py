@@ -511,15 +511,19 @@ class PeopleMixin(_StoreBase):
             # 他的话：按 (平台, uid) 取，每个平台各 per_platform 条；
             # 她的话：role='bot' + 同一个 pid（跨平台都算），单独限量。
             # 混在一条 SQL 里时她的话会把他的近聊挤出 limit（跨平台块就只剩她的发言）。
+            seen_platforms = set()
             for item in detail.get("links", []) or []:
                 # 按 pid + 平台取，不按 uid：飞书消息可能用归一后的 QQ uid 落库，
                 # 只按 open_id 查会漏掉最新几条，跨平台上下文就只剩旧消息。
+                platform = str(item.get("platform") or "")
+                if not platform or platform in seen_platforms:
+                    continue
+                seen_platforms.add(platform)
                 rows = self.conn.execute(
                     "SELECT platform, uid, name, role, content, created_at, compressed FROM messages "
                     "WHERE bot_id=? AND pid=? AND platform=? AND role!='bot' "
                     "ORDER BY created_at DESC LIMIT ?",
-                    (str(bot_id), int(detail["pid"]), str(item.get("platform") or ""),
-                     per_platform),
+                    (str(bot_id), int(detail["pid"]), platform, per_platform),
                 ).fetchall()
                 for row in rows:
                     gathered[(row["platform"], row["role"], row["created_at"], row["content"])] = row
@@ -551,9 +555,11 @@ class PeopleMixin(_StoreBase):
             # 只按当前平台 uid 查，在飞书那头永远是空。把这个人所有身份都查一遍。
             uid_candidates = [str(uid)] + [str(item.get("uid") or "") for item in detail.get("links", [])]
             seen_mem = set()
+            seen_uids = set()
             for one_uid in uid_candidates:
-                if not one_uid:
+                if not one_uid or one_uid in seen_uids:
                     continue
+                seen_uids.add(one_uid)
                 for row in self.list_memories(str(bot_id), uid=one_uid, limit=limit) or []:
                     key = (str(row.get("content") or "")[:80], row.get("created_at"))
                     if key in seen_mem:

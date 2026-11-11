@@ -11,6 +11,7 @@
 - 发布约定：每次上传同时带源码包和安装包，Release 说明取本 CHANGELOG 顶部。
 - 修跨平台上下文漏消息：飞书消息落库时 uid 会归一成 QQ 号，`person_context` 以前按 open_id 查不到最新几条；
   现在按 pid + 平台取，QQ/飞书两边都能看到对方最近说的话。
+- P2：`person_context` 同一平台/同一 uid 只查一次，重复身份不再重复跑 SQL；行为不变。
 
 
 # Changelog
