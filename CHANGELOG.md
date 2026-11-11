@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.7.2（P2：整理循环提速 + 清死代码）
+
+- `compress_memories()` 的近重复比较以前**每一对**都重新 `set(token)` 一遍（600 条 ≈ 36 万次集合构造），
+  现在 token 集合只建一次；实测 600 条样本 **1.15s → 0.83s**，命中结果完全一致
+  （`work/scope/bench_compress.py` 用旧逻辑对照跑过）；
+- 删掉 `compress_memories()` 末尾一段 `... if False else None` 的死代码（它还会多抢一次锁）；
+- 新增 `tests/test_compression.py::NearDuplicateEquivalenceTests`（4 项）：
+  60/40/30/300 条无关记忆里仍能准确找出该合并的那一对，且不相干的不动。
+
 ## 2.7.1（群聊 / 私聊记忆写入隔离）
 
 ### 问题：读路径分了会话，写路径没有

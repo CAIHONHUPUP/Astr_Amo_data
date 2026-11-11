@@ -519,6 +519,8 @@ class MemoryMixin(_StoreBase):
                    str(r["group_id"] or ""), _recall_tokens(str(r["content"] or "")))
                   for r in rows]
         with self.lock:
+            # 集合只建一次：原来每比较一对都要重新 set() 两遍，600 条时是 36 万次集合构造
+            token_sets = [set(toks) for (_id, _kind, _scope, _group, toks) in tokens]
             for i in range(len(tokens)):
                 id_a, kind_a, scope_a, group_a, tok_a = tokens[i]
                 if len(tok_a) < 8:
@@ -535,7 +537,7 @@ class MemoryMixin(_StoreBase):
                     if abs(len(tok_a) - len(tok_b)) > max(len(tok_a), len(tok_b)) * 0.5:
                         continue
                     # 双向都要像，且长度接近，避免"信息更少的短句被长句吞掉"
-                    sa, sb = set(tok_a), set(tok_b)
+                    sa, sb = token_sets[i], token_sets[j]
                     jaccard = len(sa & sb) / float(len(sa | sb) or 1)
                     containment = len(sa & sb) / float(min(len(sa), len(sb)) or 1)
                     ratio = float(min(len(tok_a), len(tok_b))) / float(max(len(tok_a), len(tok_b)) or 1)
@@ -549,10 +551,6 @@ class MemoryMixin(_StoreBase):
                     dedup += 1
             if apply and dedup:
                 self.conn.commit()
-        with self.lock:
-            self.conn.execute(
-                "UPDATE memories SET merged_count=COALESCE(merged_count,1) WHERE merged_count IS NULL"
-            ) if False else None
         return {"merged_summaries": merged, "merged_near_duplicates": dedup,
                 "applied": bool(apply)}
     def _substring_candidates(self, base, params, text, limit):

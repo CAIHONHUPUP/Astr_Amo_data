@@ -58,5 +58,65 @@ class CompressionTests(unittest.TestCase):
         self.assertEqual(len(active), 2)
 
 
+class NearDuplicateEquivalenceTests(unittest.TestCase):
+    """近重复合并（P2：token 集合改成建一次）必须照样能抓出该合并的那一对。"""
+
+    PAIR_A = "他今天在公司加班到很晚才回家路上还下着雨衣服都湿透了"
+    PAIR_B = "他今天在公司加班到很晚才回家路上还下着雨衣服都湿透了，还买了烤鱼"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.store = DataStore(os.path.join(self.tmp, "d.db"))
+
+    def tearDown(self):
+        self.store.close()
+
+    def _fill(self, count):
+        # 填充用完全不相干的句子，避免它们自己互相合并干扰断言
+        words = ["蓝鲸", "青铜", "陶罐", "风筝", "苔藓", "铁轨", "磨坊", "沙丘",
+                 "雨靴", "蒲扇", "灯笼", "沙漏", "芦苇", "铜锣", "瓦片", "竹筏"]
+        for i in range(count):
+            self.store.remember(BOT, UID, "%s%d 只是随手记第%d条，和别的事没关系"
+                                % (words[i % len(words)], i, i))
+
+    def _status(self, memory_id):
+        # list_memories 不带 status 列，直接查库
+        row = self.store.conn.execute(
+            "SELECT status FROM memories WHERE id=?", (int(memory_id),)
+        ).fetchone()
+        if row is None:
+            raise AssertionError("找不到记忆 %s" % memory_id)
+        return row["status"] or "active"
+
+    def test_duplicate_pair_found_among_many_rows(self):
+        self._fill(60)
+        a = self.store.remember(BOT, UID, self.PAIR_A)["memory_id"]
+        b = self.store.remember(BOT, UID, self.PAIR_B)["memory_id"]
+        self.store.compress_memories(BOT, apply=True)
+        self.assertEqual(sorted([self._status(a), self._status(b)]), ["active", "merged"])
+
+    def test_unrelated_rows_stay_active(self):
+        self._fill(40)
+        ids = [self.store.remember(BOT, UID, text)["memory_id"] for text in (self.PAIR_A, self.PAIR_B)]
+        self.store.compress_memories(BOT, apply=False)
+        self.assertEqual([self._status(i) for i in ids], ["active", "active"])
+
+    def test_same_pair_detected_regardless_of_order(self):
+        # 两行中间隔了 30 条无关记忆：倒排索引不该漏掉这一对
+        first = self.store.remember(BOT, UID, self.PAIR_A)["memory_id"]
+        self._fill(30)
+        second = self.store.remember(BOT, UID, self.PAIR_B)["memory_id"]
+        self.store.compress_memories(BOT, apply=True)
+        self.assertEqual(sorted([self._status(first), self._status(second)]), ["active", "merged"])
+
+    def test_old_full_scan_equivalent_on_300_rows(self):
+        # 300 条规模下仍然能找出唯一的一对近重复（token 集合只建一次，不再每对重建）
+        self._fill(300)
+        a = self.store.remember(BOT, UID, self.PAIR_A)["memory_id"]
+        b = self.store.remember(BOT, UID, self.PAIR_A + "，后来又补了一句")["memory_id"]
+        self.store.compress_memories(BOT, apply=True)
+        self.assertEqual(sorted([self._status(a), self._status(b)]), ["active", "merged"])
+
+
 if __name__ == "__main__":
     unittest.main()
