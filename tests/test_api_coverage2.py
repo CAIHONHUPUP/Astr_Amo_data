@@ -223,7 +223,12 @@ class FakeContext:
         return {}
 
 
-class PluginApiCase(unittest.TestCase):
+class PluginApiMixin:
+    """公共装置：临时插件 + 假 request + run_api。
+
+    单独拆出来是给别的用例复用（例如删关系同步），
+    直接继承 TestCase 会把这里的 api_* 用例再跑一遍。
+    """
     def setUp(self) -> None:
         self.tmp = tempfile.mkdtemp(prefix="amo-data-api2-plugin-")
         self._saved = {}
@@ -273,6 +278,10 @@ class PluginApiCase(unittest.TestCase):
 
     def run_coro(self, coro):
         return asyncio.run(coro)
+
+
+class PluginApiCase(PluginApiMixin, unittest.TestCase):
+    """api_* 用例集合；装置在 PluginApiMixin 里。"""
 
     # ---------- 状态 / 画像 ----------
     def test_status_and_profiles(self) -> None:
@@ -554,12 +563,17 @@ class PluginApiCase(unittest.TestCase):
         delete_missing = self.run_api(self.plugin.api_relation_delete,
                                       {"a_uid": "a"})
         self.assertEqual(delete_missing["code"], 1)
+        # 2.6.2 起删除关系要 confirm=1（两侧一起删，误点找不回来）
+        not_confirmed = self.run_api(self.plugin.api_relation_delete,
+                                     {"a_uid": "a", "b_uid": "b"})
+        self.assertEqual(not_confirmed["code"], 1)
+        self.assertIn("confirm", not_confirmed["msg"])
         deleted = self.run_api(self.plugin.api_relation_delete,
-                               {"a_uid": "a", "b_uid": "b"})
+                               {"a_uid": "a", "b_uid": "b", "confirm": 1})
         self.assertEqual(deleted["code"], 0)
         self.assertEqual(deleted["msg"], "已删除")
         deleted_again = self.run_api(self.plugin.api_relation_delete,
-                                     {"a_uid": "a", "b_uid": "b"})
+                                     {"a_uid": "a", "b_uid": "b", "confirm": 1})
         self.assertEqual(deleted_again["code"], 1)
         self.assertEqual(deleted_again["msg"], "没有这条关系")
 

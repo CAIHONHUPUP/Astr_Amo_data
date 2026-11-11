@@ -917,13 +917,21 @@ function buildGraph(items) {
   return { nodes: list, edges, index: nodes, radius: shell };
 }
 
+/* 两两斥力是 O(n²)，而且这段跑在主线程上：节点一多，打开关系页会直接卡住。
+   PAIR_BUDGET 是「一轮最多算多少对」的预算，超了就按步长抽样——布局会糙一点，
+   但不会把面板冻住（200 节点以内仍然是全量对算，行为不变）。 */
+const SETTLE_PAIR_BUDGET = 120000;
+
 function settleGraph(graph, iterations) {
   const nodes = graph.nodes;
   const count = nodes.length;
+  const pairs = (count * (count - 1)) / 2;
+  // 抽样按「每隔 stride 个节点算一次」，所以对数约除以 stride：stride = pairs / 预算
+  const stride = pairs > SETTLE_PAIR_BUDGET ? Math.ceil(pairs / SETTLE_PAIR_BUDGET) : 1;
   for (let step = 0; step < iterations; step += 1) {
     for (let i = 0; i < count; i += 1) {
       const a = nodes[i];
-      for (let j = i + 1; j < count; j += 1) {
+      for (let j = i + 1; j < count; j += stride) {
         const b = nodes[j];
         let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
         const dist2 = dx * dx + dy * dy + dz * dz || 0.01;
@@ -1306,11 +1314,23 @@ async function deleteRelEdge() {
     return;
   }
   const edge = relSelectedEdge;
+  const left = edge.a_name || edge.a_uid || "";
+  const right = edge.b_name || edge.b_uid || "";
+  // 删关系会两边一起删（想记 + 陪伴），点错一次就找不回来，先问一句
+  const ask = "确定删除「" + left + " ↔ " + right + "（" + (edge.relation || "朋友") + "）」这条关系吗？\n想记和陪伴两边都会删掉。";
+  if (typeof window !== "undefined" && typeof window.confirm === "function" && !window.confirm(ask)) {
+    return;
+  }
   try {
-    const res = await call("relation/delete", { a_uid: edge.a_uid, b_uid: edge.b_uid });
+    const res = await call("relation/delete", {
+      a_uid: edge.a_uid, b_uid: edge.b_uid, confirm: 1,
+    });
     const data = objectFrom(res) || {};
-    const msg = (res && res.msg) || (data.synced ? "已删除" : "已删除");
-    toast(msg + (data.warning ? "（" + data.warning + "）" : ""));
+    if (res && res.code !== undefined && Number(res.code) !== 0) {
+      toast((res && res.msg) || "删除失败", true);
+      return;
+    }
+    toast(((res && res.msg) || "已删除") + (data.warning ? "（" + data.warning + "）" : ""));
     const modal = document.getElementById("relNodeModal");
     if (modal) modal.hidden = true;
     await loadRelations();

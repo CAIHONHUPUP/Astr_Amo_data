@@ -83,7 +83,7 @@ else:  # 运行时：包模式优先，按文件直接加载时退回绝对导�
                 return ""
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.6.1"
+PLUGIN_VERSION = "2.6.2"
 DEFAULT_BOT_ID = "default"
 
 # 画像关系（陪伴那套）→ 关系网词表
@@ -1053,12 +1053,15 @@ class AmoDataPlugin(Star):
         return {"code": 0 if ok else 1, "msg": "已保存" if ok else "保存失败"}
 
     def _amo_plugin(self):
-        """找陪伴插件实例：删关系时两边一起删，避免它下次同步又写回来。"""
+        """找陪伴插件实例：删关系时两边一起删，避免它下次同步又写回来。
+
+        AstrBot 的 ``StarMetadata.star_cls`` 就是插件对象本身（见 core/star/star.py），
+        插件还没激活时它是 None——那种情况按「找不到」处理，不去猜别的属性。
+        """
         def pick(meta):
-            for attr in ("star_cls", "instance", "star", "plugin"):
-                value = getattr(meta, attr, None)
-                if value is not None and hasattr(value, "db"):
-                    return value
+            star = getattr(meta, "star_cls", None)
+            if star is not None and hasattr(star, "db"):
+                return star
             return None
 
         try:
@@ -1085,8 +1088,13 @@ class AmoDataPlugin(Star):
         b_uid = str(payload.get("b_uid") or "").strip()
         if not a_uid or not b_uid:
             return {"code": 1, "msg": "需要两个 uid"}
+        # 删关系会同时删掉陪伴那一侧的边、且下次同步可能又写回来，
+        # 所以和删画像一样要显式确认，别让面板一次误点就没了
+        if str(payload.get("confirm") or "") not in ("1", "true", "yes"):
+            return {"code": 1, "msg": "删除关系要确认，confirm=1"}
         ok = self.store.delete_relation(bot_id, a_uid, b_uid)
         synced = False
+        failure = ""
         amo = self._amo_plugin()
         if amo is not None:
             try:
@@ -1094,11 +1102,16 @@ class AmoDataPlugin(Star):
                 if db is not None and hasattr(db, "delete_relation"):
                     db.delete_relation(a_uid, b_uid)
                     synced = True
+                else:
+                    failure = "陪伴插件没有 delete_relation 接口，可能还会被同步回来"
             except Exception as exc:
+                failure = "陪伴插件那边删除失败，可能还会被同步回来"
                 logger.debug("[amo_data] 同步删除陪伴关系失败: %s" % exc)
+        else:
+            failure = "没找到陪伴插件，可能还会被同步回来"
         message = "已删除" if ok else "没有这条关系"
-        warning = "" if synced else "没找到陪伴插件，可能还会被同步回来"
-        return {"code": 0 if ok else 1, "msg": message, "data": {"synced": synced, "warning": warning}}
+        return {"code": 0 if ok else 1, "msg": message,
+                "data": {"synced": synced, "warning": failure}}
 
     async def api_messages(self):
         payload = await self._body()
