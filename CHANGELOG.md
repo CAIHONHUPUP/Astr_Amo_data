@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.7.1（群聊 / 私聊记忆写入隔离）
+
+### 问题：读路径分了会话，写路径没有
+
+`recall()` 从 2.3.x 起就支持按 `scope` / `group_id` 过滤，但**写入侧一直把两种会话混在一起**，
+两个面板参数（`scope` / `group_id`）形同虚设：群里学到的内容会和私聊内容抢同一个去重位。
+
+### 修复
+
+- `store_memory.py` `remember()`：`idem_key` 重复检查从「同一个人」收窄到「同一个人 + 同一会话」
+  （`WHERE bot_id=? AND uid=? AND scope=? AND group_id=? AND idem_key=? AND status='active'`），
+  私聊里的「好呀」不再顶掉群里的「好呀」；
+- `store_schema.py`：唯一索引 `idx_mem_idem` 由 `(bot_id, uid, idem_key)` 改为
+  `(bot_id, uid, scope, group_id, idem_key)`——之前这里的 `UNIQUE` 会直接抛
+  `IntegrityError: UNIQUE constraint failed`，是写入侧真正混在一起的根因；
+  老库在 `_migrate_columns()` 里自动 **DROP + 重建**该索引（`CREATE ... IF NOT EXISTS`
+  对同名索引不生效，必须显式重建），日志 `记忆去重索引已升级为按会话隔离`；
+- `store_memory.py` `compress_memories()`：分组键改成「谁 + 哪一天 + 哪个会话」
+  （改前**只按日期**分），群聊摘要和私聊摘要不再压成同一条，跨会话的近重复（Jaccard）也不再互相合并；
+  顺手修掉同一天两个不同的人的摘要会被拼成一条的老问题（那条记忆会挂在第一个人的名下）；
+- 新增 `tests/test_scope_isolation.py`（8 项）：同 `idem_key` 跨会话不串、自动指纹跨会话不串、
+  同会话照常去重、压缩不跨会话合并、近重复跨会话保留、压缩不跨人合并、群聊记忆在私聊召回里不可见、
+  老库的 3 列索引打开后自动升级为 5 列。
+
+### 兼容性
+
+- 数据库结构向后兼容：老库打开时自动建列 + 重建索引，不需要手工迁移；
+- 唯一索引变宽，历史上因两个会话内容相同而被合并掉的那部分**不会自动恢复**（数据已丢），
+  只是今后不再发生；
+- `recall(scope="")` 仍然等于「不过滤」，这是既有设计（由陪伴插件决定要不要限定会话）。
+  本插件负责「存得干净」，不替调用方做决定。
+
 ## 2.7.0（存储层拆分 + 检索修复 + 覆盖率门槛）
 
 ### 覆盖率 68% → 85%：面板/命令 API 层补测

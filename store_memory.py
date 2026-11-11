@@ -299,9 +299,9 @@ class MemoryMixin(_StoreBase):
             if idem_key:
                 row = self.conn.execute(
                     "SELECT id, content, importance FROM memories "
-                    "WHERE bot_id=? AND uid=? AND idem_key=? "
+                    "WHERE bot_id=? AND uid=? AND scope=? AND group_id=? AND idem_key=? "
                     "AND COALESCE(status,'active')='active'",
-                    (bot_id, uid, idem_key),
+                    (bot_id, uid, scope, group_id, idem_key),
                 ).fetchone()
                 if row:
                     # 同一件事又说了一遍：抬一点重要度、刷新时间，不新增行
@@ -457,19 +457,26 @@ class MemoryMixin(_StoreBase):
         where, params = _bot_filter(bot_id)
         with self.lock:
             rows = self.conn.execute(
-                "SELECT id, content, kind, importance, created_at, hit_count FROM memories"
+                "SELECT id, uid, content, kind, importance, created_at, hit_count, "
+                "COALESCE(scope,'private') AS scope, COALESCE(group_id,'') AS group_id "
+                "FROM memories"
                 " WHERE 1=1" + where +
                 " AND COALESCE(status,'active')='active' ORDER BY created_at DESC LIMIT ?",
                 list(params) + [max(1, int(limit))],
             ).fetchall()
         merged = 0
-        groups: Dict[str, List[sqlite3.Row]] = {}
+        # 按「谁 + 哪一天 + 哪个会话」分组：私聊摘要和某群的摘要同一天不能并成一条，
+        # 两个人的同一天摘要也不能。改前只按日期分，跨人、跨会话都会拼在一起——
+        # 群里的原话被拼进私聊那条，私聊召回就会把群聊内容说出来。
+        groups: Dict[Any, List[sqlite3.Row]] = {}
         for row in rows:
             if str(row["kind"] or "") != "conversation_summary":
                 continue
             match = re.search(r"(\d{4}-\d{2}-\d{2})", str(row["content"] or ""))
             if match:
-                groups.setdefault(match.group(1), []).append(row)
+                key = (str(row["uid"] or ""), match.group(1),
+                       str(row["scope"] or "private"), str(row["group_id"] or ""))
+                groups.setdefault(key, []).append(row)
         for day, items in groups.items():
             if len(items) < 2:
                 continue
@@ -508,16 +515,20 @@ class MemoryMixin(_StoreBase):
 
         # 通用近重复（只处理最近 limit 条，代价可控）
         dedup = 0
-        tokens = [(int(r["id"]), str(r["kind"] or ""), _recall_tokens(str(r["content"] or "")))
+        tokens = [(int(r["id"]), str(r["kind"] or ""), str(r["scope"] or "private"),
+                   str(r["group_id"] or ""), _recall_tokens(str(r["content"] or "")))
                   for r in rows]
         with self.lock:
             for i in range(len(tokens)):
-                id_a, kind_a, tok_a = tokens[i]
+                id_a, kind_a, scope_a, group_a, tok_a = tokens[i]
                 if len(tok_a) < 8:
                     continue
                 for j in range(i + 1, len(tokens)):
-                    id_b, kind_b, tok_b = tokens[j]
+                    id_b, kind_b, scope_b, group_b, tok_b = tokens[j]
                     if kind_a != kind_b:
+                        continue
+                    # 跨会话的近重复不合并：群里的那条接不到私聊行上
+                    if scope_a != scope_b or group_a != group_b:
                         continue
                     if len(tok_b) < 8:
                         continue

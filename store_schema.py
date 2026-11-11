@@ -75,7 +75,8 @@ class SchemaMixin(_StoreBase):
                 );
                 CREATE INDEX IF NOT EXISTS idx_mem_lookup ON memories(bot_id, uid, scope, group_id);
                 CREATE INDEX IF NOT EXISTS idx_mem_hit ON memories(bot_id, uid, last_hit_at);
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_mem_idem ON memories(bot_id, uid, idem_key)
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_mem_idem
+                    ON memories(bot_id, uid, scope, group_id, idem_key)
                     WHERE idem_key != '';
 
                 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
@@ -281,6 +282,27 @@ class SchemaMixin(_StoreBase):
                     conn.execute(ddl)
                 except Exception:
                     pass
+            # 去重索引也要跟着 scope 走：老库是 (bot_id, uid, idem_key)，同一句话在群里
+            # 和私聊各说一次就会撞 UNIQUE（私聊那条写不进去，或反过来），而代码里
+            # 的去重查询已经按 (scope, group_id) 分流了，索引必须一致。
+            try:
+                row = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_mem_idem'"
+                ).fetchone()
+                sql = str(row["sql"] or "") if row else ""
+                if row is None or "scope" not in sql:
+                    conn.execute("DROP INDEX IF EXISTS idx_mem_idem")
+                    conn.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_mem_idem "
+                        "ON memories(bot_id, uid, scope, group_id, idem_key) "
+                        "WHERE idem_key != ''"
+                    )
+                    logger.info("[amo_data] 记忆去重索引已升级为按会话隔离")
+                conn.commit()
+            except Exception as exc:
+                # 建不出来（例如库里有遗留的重复 idem_key）也不影响用：
+                # remember 里的查询照样按 (scope, group_id) 兜着
+                logger.warning("[amo_data] 记忆去重索引升级失败: %s" % exc)
     def _snapshot_from_conn(self, conn, bot_id: str = "") -> Dict[str, Any]:
         where, params = _bot_filter(bot_id)
         out: Dict[str, Any] = {
