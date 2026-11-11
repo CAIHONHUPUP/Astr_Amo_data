@@ -62,7 +62,7 @@ def check_rules(version):
     return []
 
 
-REPO_OWNER = "GM888888456"
+REPO_OWNER = "CAIHONHUPUP"
 
 
 def repo_problem():
