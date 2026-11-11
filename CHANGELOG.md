@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.7.6（聊天列表按时间倒序 + 补齐漏记的聊天）
+
+- **面板「聊天」页改成按聊天时间倒序**（`ORDER BY created_at DESC, id DESC`）。
+  以前按 `id DESC`：摘要行是事后补写的（id 大、created_at 早），会把「2026-11-08 的摘要」
+  顶到最新聊天上面，看着像时间乱序。
+- 新增 `tests/test_message_order.py`（3 项）：倒序、同一秒按 id 兜底、`recall_messages`
+  仍然按时间正序返回。
+- 配套脚本 `work/scope/import_missing_chats.py`：从 AstrBot 日志按时间顺序补录
+  2026-11-10 15:28 之后漏进想记的聊天（本次补了 108 条：lark 47+49、QQ 6+6）。
+
 ## 2.7.4（写聊天记录失败不再静默）
 
 - `MemoryAPI.add_message()` 写库失败从 debug 提到 **warning**。

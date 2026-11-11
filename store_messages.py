@@ -340,7 +340,9 @@ class MessagesMixin(_StoreBase):
         if uid:
             sql += " AND uid=?"
             params.append(str(uid))
-        sql += " ORDER BY id DESC LIMIT ?"
+        # 按**真实聊天时间**倒序：摘要行是事后补写的（id 更大但 created_at 更早），
+        # 只按 id 排会把「2026-11-08 的摘要」顶到最新聊天的上面，面板看着像时间乱序。
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
         params.append(max(1, min(int(limit), 1000)))
         with self.lock:
             rows = self.conn.execute(sql, params).fetchall()
