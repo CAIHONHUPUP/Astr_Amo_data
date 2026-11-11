@@ -18,10 +18,18 @@ def read(name):
 
 class LoggingRuleTests(unittest.TestCase):
     def test_store_does_not_fallback_to_builtin_logging(self):
-        body = read("store.py")
-        self.assertNotIn("import logging", body)
-        self.assertNotIn("logging.getLogger", body)
-        self.assertIn("from astrbot.api import logger", body)
+        # store.py 拆成 store_*.py 之后，守卫要扫整组模块，而不是只看入口
+        names = sorted(
+            name for name in os.listdir(ROOT)
+            if name.startswith("store") and name.endswith(".py")
+        )
+        self.assertIn("store.py", names)
+        for name in names:
+            body = read(name)
+            self.assertNotIn("import logging", body, name)
+            self.assertNotIn("logging.getLogger", body, name)
+        joined = "\n".join(read(name) for name in names)
+        self.assertIn("from astrbot.api import logger", joined)
 
 
 class AsyncBlockingTests(unittest.TestCase):

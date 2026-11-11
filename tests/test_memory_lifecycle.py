@@ -76,7 +76,7 @@ class ArchiveTests(unittest.TestCase):
         old = int(time.time()) - 200 * 86400
         stale = self.store.remember(BOT, UID, "很久以前的一件小事", importance=0.2,
                                     created_at=old, last_hit_at=old)
-        fresh = self.store.remember(BOT, UID, "最近的重要事情，生日是十二月十号", importance=0.9)
+        self.store.remember(BOT, UID, "最近的重要事情，生日是十二月十号", importance=0.9)
         result = self.store.archive_stale(BOT, days=90, max_importance=0.3)
         self.assertEqual(result["archived"], 1)
         status = self.store.conn.execute(

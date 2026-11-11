@@ -23,6 +23,9 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+from typing import Optional
+
 import asyncio
 import json
 import os
@@ -30,42 +33,57 @@ import os
 from astrbot.api import logger
 from astrbot.api.star import Context, Star
 
-try:  # AstrBot 4.x
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from astrbot.api.event import filter  # noqa: F401
-except Exception:  # pragma: no cover - 老版本没有该模块时不影响加载
-    filter = None
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:  # AstrBot 4.x
+        from astrbot.api.event import filter  # noqa: F401
+    except Exception:  # pragma: no cover - 老版本没有该模块时不影响加载
+        filter = None
 
-try:
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from astrbot.api.web import request as web_request
-except Exception:  # pragma: no cover
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
     try:
-        from quart import request as web_request  # type: ignore
-    except Exception:
-        web_request = None
+        from astrbot.api.web import request as web_request
+    except Exception:  # pragma: no cover
+        try:
+            from quart import request as web_request  # type: ignore
+        except Exception:
+            web_request = None
 
-try:
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
     from .store import DataStore
-except ImportError:  # 单文件加载时的兜底
-    from store import DataStore  # type: ignore
-
-try:
-    from . import clock as _clock
-except Exception:
-    import clock as _clock
-
-try:
-    from .time_query import parse_time_span, describe_span
-except ImportError:  # 单文件加载时的兜底
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
     try:
-        from time_query import parse_time_span, describe_span  # type: ignore
-    except Exception:  # pragma: no cover - 极端情况下退化成"不识别时间"
-        def parse_time_span(*args, **kwargs):
-            return None
-        def describe_span(*args, **kwargs):
-            return ""
+        from .store import DataStore
+    except ImportError:  # 单文件加载时的兜底
+        from store import DataStore  # type: ignore
+
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
+    from . import clock as _clock
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:
+        from . import clock as _clock
+    except Exception:
+        import clock as _clock
+
+if TYPE_CHECKING:  # 只给类型检查看：包内相对导入
+    from .time_query import parse_time_span, describe_span
+else:  # 运行时：包模式优先，按文件直接加载时退回绝对导入
+    try:
+        from .time_query import parse_time_span, describe_span
+    except ImportError:  # 单文件加载时的兜底
+        try:
+            from time_query import parse_time_span, describe_span  # type: ignore
+        except Exception:  # pragma: no cover - 极端情况下退化成"不识别时间"
+            def parse_time_span(*args, **kwargs):
+                return None
+            def describe_span(*args, **kwargs):
+                return ""
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.6.3"
+PLUGIN_VERSION = "2.7.0"
 DEFAULT_BOT_ID = "default"
 
 
@@ -269,10 +287,10 @@ class MemoryAPI:
             return {"error": 1}
 
     async def messages_since(self, bot_id: str, uid: str, since_ts: int = 0,
-                             limit: int = 200) -> list:
-        """增量聊天（里程碑归档用）：某个 uid 在 since_ts 之后的消息。"""
+                             limit: int = 200, umo: str = "") -> list:
+        """增量聊天（里程碑归档用）：某个 uid 或某个会话在 since_ts 之后的消息。"""
         try:
-            return self._store.messages_since(self._bot(bot_id), uid, since_ts, limit)
+            return self._store.messages_since(self._bot(bot_id), uid, since_ts, limit, umo=umo)
         except Exception as exc:
             logger.debug("[amo_data] 读增量聊天失败: %s" % exc)
             return []
@@ -422,7 +440,7 @@ class MemoryAPI:
 
 
 class AmoDataPlugin(Star):
-    def __init__(self, context: Context, config: dict = None):
+    def __init__(self, context: Context, config: Optional[dict] = None):
         super().__init__(context)
         self.config = config or {}
         # 时区：服务器常在 UTC 跑，按配置时区算「今天/昨天/现在」，否则日期会错一天
@@ -457,7 +475,6 @@ class AmoDataPlugin(Star):
         """每天自动备份一次数据库，保留 backup_keep 份。"""
         if not self._cfg_bool("backup_daily", True):
             return ""
-        import datetime as _dt
         day = _clock.today().strftime("%Y-%m-%d")
         key = "backup_day:" + day
         try:
@@ -476,7 +493,6 @@ class AmoDataPlugin(Star):
 
     async def _maybe_weekly_cleanup(self, bot_id: str) -> dict:
         """每周只跑一次：合并同天摘要、近重复去重、归档低价值老记忆。"""
-        import datetime as _dt
         week = _clock.today().strftime("%G-W%V")
         key = "cleanup_week:" + week
         try:
@@ -567,7 +583,7 @@ class AmoDataPlugin(Star):
         return max(1, self._cfg_int("log_days", 7))
 
     # ---------- 工具 ----------
-    def _bot_id(self, payload: dict = None, write: bool = False) -> str:
+    def _bot_id(self, payload: Optional[dict] = None, write: bool = False) -> str:
         """读：留空表示所有 bot；写：留空时自动落到唯一的 bot，多个 bot 才用 default。"""
         data = payload or {}
         value = str(data.get("bot_id") or "").strip()
@@ -602,7 +618,49 @@ class AmoDataPlugin(Star):
         return {}
 
     # ---------- Web 面板 ----------
+    # 面板写操作（会改库/写文件）：只注册 POST + 套跨站守卫。
+    # 以前所有路由都注册成 GET+POST 且没有任何检查，浏览器里一个 <img src> 或
+    # 外链页面就能触发（/backup/now 这类甚至不需要参数）。
+    WRITE_PATHS = frozenset({
+        "/profile/save", "/profile/delete",
+        "/person/link", "/person/unlink", "/person/merge",
+        "/memory/save", "/memory/delete", "/memory/maintain",
+        "/relation/save", "/relation/delete",
+        "/backup/now", "/backup/import", "/backup/restore",
+        "/message/delete", "/message/clear",
+        "/log/delete", "/log/clear",
+        "/schedule/delete", "/maintenance",
+    })
+
     def _safe_register_web_apis(self) -> None:
+        # 清掉上一实例/旧版本残留的路由：AstrBot 重载插件时不会清理
+        # registered_web_apis，而 register_web_api 只在「路由 + methods 完全相同」时替换。
+        # 旧条目是 [GET, POST]，新注册是 [POST]，不清理就会两份并存、GET 仍打到旧 handler
+        # （实测：写接口改成 POST-only 后，GET /backup/now 照样执行并写了备份文件）。
+        try:
+            prefixes = [PLUGIN_NAME, getattr(self, "name", PLUGIN_NAME)]
+            own = tuple(
+                "/" + str(prefix).strip("/") + "/"
+                for prefix in prefixes if str(prefix).strip("/")
+            )
+            holders = (type(self.context), self.context)
+            seen_holders = set()
+            for holder in holders:
+                if id(holder) in seen_holders:
+                    continue
+                seen_holders.add(id(holder))
+                registry = getattr(holder, "registered_web_apis", None)
+                if not isinstance(registry, list):
+                    continue
+                registry[:] = [
+                    item for item in registry
+                    if not (
+                        isinstance(item, tuple) and item
+                        and str(item[0]).startswith(own)
+                    )
+                ]
+        except Exception as exc:
+            logger.warning("[amo_data] 清理旧 Web API 路由失败（重载后请完整重启）: %s" % exc)
         routes = [
             ("/status", self.api_status),
             ("/profiles", self.api_profiles),
@@ -645,9 +703,11 @@ class AmoDataPlugin(Star):
                 continue
             seen.add(clean)
             for path, handler in routes:
+                is_write = path in self.WRITE_PATHS
+                methods = ["POST"] if is_write else ["GET", "POST"]
                 try:
                     self.context.register_web_api(
-                        "/" + clean + path, self._guard(handler), ["GET", "POST"], path
+                        "/" + clean + path, self._guard(handler, is_write), methods, path
                     )
                 except Exception as exc:
                     logger.warning("[amo_data] 注册 %s%s 失败: %s" % (clean, path, exc))
@@ -658,8 +718,52 @@ class AmoDataPlugin(Star):
         else:
             logger.warning("[amo_data] Web 面板接口一条都没注册成功，面板会显示“后端未就绪”")
 
-    def _guard(self, handler):
+    def _guard(self, handler, is_write=False):
+        """异常兜底 + 写接口的前置检查（只收 POST、拒绝跨站）。
+
+        不是完整鉴权（AstrBot 侧有自己的登录态），只挡浏览器里最容易发生的 CSRF：
+        ``<img src>``、聊天预览卡片、外链页面的跨站表单。
+        """
         async def wrapper(*args, **kwargs):
+            try:
+                if is_write:
+                    method = ""
+                    origin = ""
+                    host = ""
+                    site = ""
+                    headers = None
+                    if web_request is not None:
+                        method = str(getattr(web_request, "method", "") or "").upper()
+                        headers = getattr(web_request, "headers", None)
+                        if headers is not None:
+                            origin = str(headers.get("origin") or headers.get("referer") or "")
+                            host = str(headers.get("host") or "")
+                            site = str(headers.get("sec-fetch-site") or "").strip().lower()
+                    if method and method != "POST":
+                        logger.warning("[amo_data] 拒绝非 POST 的 Web 写操作（%s）" % method)
+                        return {"code": 403, "msg": "写操作只接受 POST（面板请刷新到最新版）"}
+                    if site == "cross-site":
+                        logger.warning("[amo_data] 拒绝跨站 Web 写操作（origin=%s）" % origin)
+                        return {"code": 403, "msg": "拒绝跨站请求"}
+                    if origin and host:
+                        from urllib.parse import urlparse
+                        origin_host = (urlparse(origin).hostname or "").lower()
+                        allowed = {(host.split(":")[0] or "").strip().lower()}
+                        if headers is not None:
+                            for key in ("x-forwarded-host", "x-real-host"):
+                                value = str(headers.get(key) or "").split(",")[0].strip()
+                                if value:
+                                    allowed.add(value.split(":")[0].strip().lower())
+                        allowed.discard("")
+                        if origin_host and allowed and origin_host not in allowed:
+                            if site in ("same-origin", "same-site"):
+                                logger.debug("[amo_data] Web 写操作 Host 与 Origin 不一致（同源，放行）")
+                            else:
+                                logger.warning("[amo_data] 拒绝来源不一致的 Web 写操作: %s -> %s"
+                                               % (origin, host))
+                                return {"code": 403, "msg": "拒绝来源不一致的请求"}
+            except Exception as exc:
+                logger.debug("[amo_data] Web 守卫检查失败（放行）: %s" % exc)
             try:
                 return await handler(*args, **kwargs)
             except Exception as exc:
@@ -1092,10 +1196,6 @@ class AmoDataPlugin(Star):
                         )
                 except Exception as exc:
                     logger.debug("[amo_data] 向量补全失败: %s" % exc)
-                try:
-                    from astrbot.core.utils.astrbot_path import get_astrbot_data_path  # noqa: F401
-                except Exception:
-                    pass
             except asyncio.CancelledError:
                 return
             except Exception as exc:

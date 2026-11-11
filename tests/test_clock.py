@@ -23,6 +23,7 @@ sys.path.insert(0, ROOT)
 import clock  # noqa: E402
 
 
+@unittest.skipUnless(hasattr(time, "tzset"), "Windows 没有 tzset，进程级时区改不了")
 class ClockTests(unittest.TestCase):
     def setUp(self):
         self._prev = os.environ.get("TZ")
@@ -77,7 +78,9 @@ class ClockTests(unittest.TestCase):
 
 class SourceGuardTests(unittest.TestCase):
     def test_no_bare_localtime_or_now(self):
-        for name in ("store.py", "time_query.py", "main.py"):
+        names = ["store.py", "time_query.py", "main.py", "store_util.py", "store_schema.py",
+                 "store_people.py", "store_memory.py", "store_messages.py", "store_logs.py"]
+        for name in names:
             with open(os.path.join(ROOT, name), encoding="utf-8") as fp:
                 body = fp.read()
             self.assertEqual(body.count("'localtime'"), 0, name + " 还在用 SQLite 的 'localtime'")
@@ -88,6 +91,25 @@ class SourceGuardTests(unittest.TestCase):
         with open(os.path.join(ROOT, "_conf_schema.json"), encoding="utf-8") as fp:
             schema = json.load(fp)
         self.assertEqual(schema["timezone"]["default"], "Asia/Shanghai")
+
+
+@unittest.skipIf(hasattr(time, "tzset"), "只在没有 tzset 的平台（Windows）验证")
+class NoTzsetTests(unittest.TestCase):
+    def test_configure_does_not_poison_tz(self):
+        """Windows 上写 TZ=Asia/Shanghai 会让 CRT 把本地时间当 UTC，绝不能写。"""
+        prev = os.environ.get("TZ")
+        try:
+            clock.configure("Asia/Shanghai")
+            self.assertEqual(os.environ.get("TZ"), prev)
+            self.assertFalse(clock.applied())
+            expected = datetime.now(clock.get_zone("Asia/Shanghai")).replace(tzinfo=None)
+            self.assertLess(abs((clock.now() - expected).total_seconds()), 60)
+        finally:
+            clock.restore()
+            if prev is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = prev
 
 
 if __name__ == "__main__":

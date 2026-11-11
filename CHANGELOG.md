@@ -1,5 +1,80 @@
 # Changelog
 
+## 2.7.0（存储层拆分 + 检索修复 + 覆盖率门槛）
+
+### 覆盖率 68% → 85%：面板/命令 API 层补测
+
+- 新增 `tests/test_api_coverage2.py`（25 个测试 + 39 个子测试）：
+  `MemoryAPI` 全部 39 个方法的 store 异常兜底、插件侧 31 个 `api_*` 处理器的
+  正常/缺参/失败分支（画像、人物、记忆、备份、快照、关系、聊天、日志、日程缓存、维护）；
+- 另外覆盖：CSRF `_guard`（GET 写入拒绝、跨站、Origin 不一致、同源放行、`X-Forwarded-Host`、
+  handler 异常）、`_body` 的 json/get_json/非法体回退、`_bot_id` 归一、每日备份与每周整理去重、
+  维护循环跑完整一轮后正常停止、初始化时区失败与 data 目录回退、旧路由清理、`terminate` 关库；
+- `main.py` 覆盖率 **38% → 96%**，全局 **68% → 85%**，测试 164 → **189** 项；
+- `.coveragerc` 底线 **65% → 80%**（实测 85%，留 5 个点余量）；
+- 未改任何源码：这一批只补测试，行为零变化。
+
+### 存储层拆分：store.py 2,913 行 → 7 个模块
+
+- `store.py` **2,913 → 219 行**，只保留连接/设置/关闭和组合：
+  `class DataStore(SchemaMixin, PeopleMixin, MemoryMixin, MessagesMixin, LogsMixin)`；
+- 拆出：
+  `store_util.py`（388 行，平台归一/BM25/遗忘曲线/时间窗等纯函数与常量）、
+  `store_schema.py`（493 行，建表/迁移/备份/快照/统计）、
+  `store_people.py`（545 行，画像/身份归一/人物合并）、
+  `store_memory.py`（812 行，写入/去重/取代/压缩/召回/向量）、
+  `store_messages.py`（527 行，消息/时间窗/分层总结/清理）、
+  `store_logs.py`（190 行，关系/缓存/操作日志）；
+- **对外 API 不变**：`from store import DataStore`、`normalize_platform`、`_slot_facts`、
+  `platform_label`、`platform_of_umo` 等旧入口仍然可用（`store.py` 再导出，`__all__` 保留）；
+- 行为不变：拆分只移动方法，数据表结构、检索算法、SQL 全都没改；
+- 验证：`pytest tests` **147 项**（7 项 Windows 无 `tzset` 跳过）全过、`pyflakes` 0、覆盖率 **86%**；
+- `test_clock` 的源码守卫（禁止 `datetime.now()` / `'localtime'`）扩展到全部 store_* 模块。
+
+### 类型检查与 CI 门槛（对齐陪伴插件）
+
+- 新增 `store_types.py`：`StoreLike` 协议声明 5 个 mixin 组合后的公共接口；
+  mixin 条件继承协议、运行时继承 `object`，不参与 MRO、不挡真实实现，mypy 的 attr-defined 归零；
+- 双模式导入（包内相对 / 按文件加载）统一成 `if TYPE_CHECKING: ... else: try/except`，
+  不再有 no-redef；
+- 新增 `tools/mypy_check.py` + `mypy.ini`：把插件目录当包检查，CI 覆盖 **13 个源文件，0 错误**；
+- CI 增加类型检查与覆盖率两步；`requirements-dev.txt` 补 `mypy` / `coverage`；
+- `.coveragerc` 覆盖率底线（当时 65%，本批之后已抬到 80%），`store_types.py` 是纯类型文件不参与统计。
+
+### 测试补强：main.py 从 0 覆盖到 68%
+
+- 新增 `tests/test_memory_api.py`（24 项）：用真实临时库把 `MemoryAPI` 的画像/记忆/关系/缓存/
+  消息/快照/备份/人物/日志/统计逐条跑一遍，并覆盖"store 抛异常时返回默认值"的兜底路径；
+- 插件侧补配置读取（`_cfg_*` / `bot_id` / 保留天数）、Web 路由注册的冒烟；
+- 新增测试用 `tests/astrbot_stub.py`（纯单测不依赖 AstrBot 安装）；
+- 总量 **147 → 171 项**，覆盖率 **57% → 68%**（`main.py` 38%，其余存储模块 80%+）。
+
+
+### 跨平台归一（配合陪伴插件）
+
+- 新增 `normalize_platform()`：`qq`/`onebot`/`feishu`/机器人名前缀 → 标准平台名；
+- `add_message` 给 `role='bot'` 的行按会话另一方补 `pid`；
+- `person_context` 他的近聊与她的回复分开展量，记忆按这个人所有身份 uid 查；
+- `messages_since` 支持按 `umo` 取（里程碑不再丢她的回复）。
+
+### 其余修复
+
+- 快照导入失败计数（`failed`）并记 warning，不再静默丢；
+- `recall_messages` 时间窗超 limit 时保留最近那段；压缩聊天按字数分段，不再丢正文；
+- 周几不指向未来、「凌晨1点/深夜1点」等小时归位修正；
+- **Windows 时区修复**：没有 `tzset` 的平台不再把 `TZ` 写成 IANA 名字（Windows CRT 会按 UTC
+  解释，导致 `fromtimestamp()` 和 `datetime.now()` 差 8 小时）；
+- 测试在 Windows 可跑（没有 `tzset` 时跳过进程时区用例，时间戳直接按目标时区构造）；
+- P2：清掉未使用导入/死变量。
+
+合并说明（与 2.6.x 对齐）：
+
+- 2.5.2 的关系图覆盖、2.5.6 的 `_time_window` 按配置时区取今天、2.5.8 的
+  「logger 不回落内置 logging」都一并搬进了拆分后的模块（`store_messages.py` /
+  `store_util.py`），没有因为重构丢功能；
+- `tests/test_review_compliance.py` 的日志守卫改成扫整组 `store_*.py`；
+- 合并后 `pytest tests` **199 项通过、1 项 Windows 跳过**。
+
 ## 2.6.3
 
 - 跟随新版本号规则：测试版动末位、发布版动第二位、大版本动首位；不再限制奇偶与 1、7；

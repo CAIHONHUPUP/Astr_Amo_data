@@ -1,5 +1,10 @@
 name: tests
-on: [push, pull_request]
+
+on:
+  push:
+    branches: ['**']  # 只在分支 push 时跑；移动 tag 不再触发
+  pull_request:
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -9,4 +14,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements-dev.txt
-      - run: python -m pytest tests -q
+      - name: Type check
+        run: python tools/mypy_check.py
+      - name: Run tests
+        run: coverage run -m pytest tests -q
+      - name: Coverage floor
+        run: coverage report
