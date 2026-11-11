@@ -83,7 +83,7 @@ else:  # 运行时：包模式优先，按文件直接加载时退回绝对导�
                 return ""
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.7.2"
+PLUGIN_VERSION = "2.7.4"
 DEFAULT_BOT_ID = "default"
 
 
@@ -231,7 +231,7 @@ class MemoryAPI:
                 platform=platform, message_id=message_id,
             )
         except Exception as exc:
-            logger.debug("[amo_data] 写聊天记录失败: %s" % exc)
+            logger.warning("[amo_data] 写聊天记录失败: %s" % exc)
             return 0
 
     async def list_messages(self, bot_id: str, umo: str = "", limit: int = 200, uid: str = "") -> list:
