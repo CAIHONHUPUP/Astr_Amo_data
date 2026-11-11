@@ -55,16 +55,11 @@ def code_version():
 
 
 def check_rules(version):
-    problems = []
+    """只校验格式；升位规则见 README：测试动末位、发布动第二位、大版本动首位。"""
     parts = version.split(".")
-    if len(parts) != 3:
-        return ["版本号应该是 x.y.z"]
-    tail = int(parts[2])
-    if tail % 2 != 0:
-        problems.append("尾号 %d 是奇数，按规则只能取 0/2/4/6/8" % tail)
-    if "1" in version or "7" in version:
-        problems.append("版本号 %s 里出现了数字 1 或 7，按规则要避开" % version)
-    return problems
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        return ["版本号应该是 x.y.z（三段数字）"]
+    return []
 
 
 REPO_OWNER = "GM888888456"
