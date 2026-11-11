@@ -112,6 +112,13 @@ class PeopleMixin(_StoreBase):
                 (bot_id, uid, merged["name"], merged["alias"], merged["relation"],
                  merged["remark"], _now()),
             )
+            # 画像改名后，人物卡的名字也要跟着改：否则会一直显示最早建档时的旧名字
+            if merged["name"]:
+                self.conn.execute(
+                    "UPDATE persons SET name=? WHERE bot_id=? AND pid IN "
+                    "(SELECT pid FROM person_links WHERE bot_id=? AND uid=?)",
+                    (merged["name"], bot_id, bot_id, uid),
+                )
             self.conn.commit()
         return self.get_profile(bot_id, uid)
     def list_profiles(self, bot_id: str, keyword: str = "", limit: int = 100) -> List[Dict[str, Any]]:

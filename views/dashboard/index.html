@@ -2,8 +2,9 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>我想永远记住你</title>
+<title>我能永远记住你</title>
 <style>
   :root { --bg:#f7f5f8; --card:#fff; --text:#2c2430; --muted:#8a8090; --line:#ebe4ee; --pink:#d4578a; }
   * { box-sizing: border-box; }
@@ -26,6 +27,23 @@
   button.primary { background:var(--pink); color:#fff; border:none; border-radius:8px; padding:7px 14px; font-size:13px; cursor:pointer; }
   button.ghost { background:transparent; border:1px solid var(--line); border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer; color:var(--muted); }
   button.danger { color:#c0392b; border-color:#f0d7d3; }
+  .modal { position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center; padding:18px; background:rgba(6,5,16,.66); backdrop-filter:blur(5px); }
+  .modal[hidden] { display:none; }
+  .modal-card { width:min(92vw,520px); max-height:82vh; overflow:auto; background:linear-gradient(165deg,#1e1938,#0c0918 72%); color:#f1ecff; border:1px solid rgba(255,255,255,0.14); border-radius:18px; padding:16px 18px; box-shadow:0 24px 70px rgba(0,0,0,0.55); }
+  .modal-card .hint { color:#b9addb; }
+  .rel-node-edge { display:grid; grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr); align-items:center; gap:8px; padding:9px 10px; margin-top:6px; border-radius:10px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.08); cursor:pointer; }
+  .rel-node-edge input { accent-color:#ff5fa2; }
+  .rel-node-edge .edge-left { text-align:right; color:#f3edff; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rel-node-edge .edge-right { text-align:left; color:#f3edff; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rel-node-edge .edge-center { display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.15; min-width:64px; }
+  .rel-node-edge .edge-relation { font-size:11px; color:#ffd6e8; background:rgba(255,95,162,0.18); border:1px solid rgba(255,95,162,0.38); border-radius:999px; padding:0 7px; margin-bottom:1px; }
+  .rel-node-edge .edge-arrow { color:#ff9cc6; font-size:15px; font-weight:600; }
+  .rel-node-edge .edge-note { color:#a99bd0; font-size:10px; margin-top:1px; white-space:nowrap; max-width:120px; overflow:hidden; text-overflow:ellipsis; }
+  .rel-node-delete { width:100%; margin-top:12px; padding:10px; border-radius:10px; font-weight:600; color:#ffd6e4; border:1px solid rgba(255,95,162,0.5); background:linear-gradient(90deg, rgba(255,95,162,0.22), rgba(255,95,162,0.08)); }
+  #panel-relations .card { background:radial-gradient(circle at 25% 15%, #251d46, #0b0817 72%); border-color:#2b2442; color:#efe9ff; }
+  #panel-relations .card .hint { color:#b5a9d6; }
+  #panel-relations .ghost { color:#e7dcff; border-color:rgba(255,255,255,0.2); }
+  #relGraph { border-radius:14px; box-shadow:inset 0 0 60px rgba(0,0,0,0.5); }
   .list { display:flex; flex-direction:column; gap:6px; }
   .item { border:1px solid var(--line); border-radius:10px; padding:9px 10px; display:flex; gap:10px; align-items:center; cursor:pointer; background:#fff; }
   .item:hover { border-color:#e0d3e6; }
@@ -42,10 +60,14 @@
   .toast.show { opacity:1; }
   .hint { font-size:11px; color:var(--muted); margin-top:4px; }
 </style>
+<style id="amo-skyblue-theme">
+  :root { --pink:#0ea5e9; --pink2:#38bdf8; --brand:#0ea5e9; }
+  html[data-theme="dark"] { --pink:#38bdf8; --pink2:#7dd3fc; }
+</style>
 </head>
 <body>
 <header>
-  <h1>我想永远记住你</h1>
+  <h1>我能永远记住你</h1>
   <span class="badge" id="stat">读取中…</span>
 </header>
 
@@ -146,13 +168,30 @@
     <div class="card">
       <div class="row">
         <strong class="grow">关系图谱</strong>
+        <label class="hint" style="display:flex;align-items:center;gap:4px;margin:0;cursor:pointer">
+          <input type="checkbox" id="relAuto" checked style="width:auto;margin:0"> 自动旋转
+        </label>
         <button class="ghost" id="btnRelReload">刷新</button>
       </div>
       <canvas id="relGraph" style="width:100%;height:min(440px,58vh);display:block;cursor:grab"></canvas>
       <div class="hint" id="relLegend"></div>
-      <div class="hint">拖动旋转 · 滚轮缩放 · 双击回正；只读展示，增删改在「陪伴」面板里点神经元图标。</div>
+      <div class="hint">拖动旋转 · 滚轮缩放 · 双击回正；点节点查看详情，可在弹窗底部删除关系。</div>
     </div>
   </section>
+
+  <div class="modal" id="relNodeModal" hidden>
+    <div class="modal-card">
+      <div class="row" style="display:flex;align-items:center;gap:8px">
+        <div class="grow">
+          <div class="label" id="relNodeTitle">节点详情</div>
+          <div class="hint" id="relNodeSub"></div>
+        </div>
+        <button class="ghost" id="relNodeClose">关闭</button>
+      </div>
+      <div class="list" id="relNodeEdges" style="margin-top:10px"></div>
+      <button class="ghost danger rel-node-delete" id="relNodeDelete">删除选中的关系</button>
+    </div>
+  </div>
 
   <section class="panel" id="panel-chat">
     <div class="card">
@@ -216,9 +255,7 @@
   </section>
 </main>
 
-<footer style="padding:0 16px 28px;text-align:center;font-size:11px;color:var(--muted)">
-  数据来自 Astr_Amo_data · 反馈 / 建议：<a href="https://qm.qq.com/q/1055679275" target="_blank" rel="noreferrer" style="color:var(--pink);text-decoration:none">点击加入 QQ 群 1055679275</a>
-</footer>
+
 
 <div class="toast" id="toast"></div>
 
@@ -729,31 +766,119 @@ document.getElementById("btnPersonMerge").addEventListener("click", async () => 
    和「我想永远陪伴你」的陪伴面板同一套渲染：球面撒点 + 3D 力导向 + 透视投影，
    拖动旋转、滚轮缩放、双击回正，远的线淡、近的线亮，节点带辉光。
    这里只是只读展示，增删改仍在陪伴面板里做。 */
-// 和「陪伴」面板完全一致的五档：仇人黑、抵触黄、普通白、熟识紫、恋人粉。
-const NEURON_TIERS = ["仇恨", "抵触", "普通", "熟识", "恋人"];
-const NEURON_COLORS = {
-  仇恨: "#1f1f1f", 抵触: "#e0b341", 普通: "#ffffff",
-  熟识: "#9b8fd0", 恋人: "#e06a9a",
+const REL_COLORS = {
+  家人: "#d98c8c", 恋人: "#e06a9a", 朋友: "#7aa8e0", 同事: "#6fc0a8",
+  同学: "#c9a24d", 熟人: "#9b8fd0", 陌生人: "#9aa0a6", 仇人: "#c0504d",
 };
-const NEURON_STROKES = { 普通: "#cfc9d8" };
-const REL_RANK = { 仇恨: 0, 抵触: 1, 普通: 2, 熟识: 3, 恋人: 4 };
-
-function neuronTier(relation) {
-  const value = String(relation || "").trim();
-  if (value === "仇人" || value === "仇恨") return "仇恨";
-  if (value === "抵触") return "抵触";
-  if (value === "恋人" || value === "相恋") return "恋人";
-  if (value === "熟人" || value === "熟识") return "熟识";
-  if (["家人", "朋友", "同事", "同学"].includes(value)) return "熟识";
-  return "普通";
-}
+const REL_GLOW = {
+  家人: "#ffb86b", 恋人: "#ff5fa2", 朋友: "#7fd1ff", 同事: "#72e0c4",
+  同学: "#ffd166", 熟人: "#c9a7ff", 陌生人: "#9aa6c9", 仇人: "#ff6b6b",
+};
+const REL_RANK = { 家人: 5, 恋人: 6, 朋友: 4, 同事: 3, 同学: 3, 熟人: 2, 陌生人: 1, 仇人: 4 };
 let graphState = null;
 let relGraphRaf = 0;
 let relHoverId = "";
-const relCamera = { yaw: 0.35, pitch: -0.2, distance: 0, auto: true };
+let relItems = [];
+let relSelectedEdge = null;
+const relCamera = { yaw: 0.35, pitch: -0.2, roll: 0, distance: 0, auto: true };
 
 function relColor(relation) {
-  return NEURON_COLORS[neuronTier(relation)] || NEURON_COLORS["普通"];
+  return REL_COLORS[relation] || "#9aa0a6";
+}
+
+function relGlowColor(relation) {
+  return REL_GLOW[relation] || "#b8c2ff";
+}
+
+function drawStarfield(ctx, width, height, now) {
+  // 深空底色：偏冷的天顶 + 更暗的地平线
+  const base = ctx.createLinearGradient(0, 0, width, height);
+  base.addColorStop(0, "#070512");
+  base.addColorStop(0.45, "#0b0920");
+  base.addColorStop(1, "#04030b");
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, width, height);
+
+  // 斜向银河带：柔和的亮带，而不是两个圆形星云
+  ctx.save();
+  ctx.translate(width * 0.52, height * 0.5);
+  ctx.rotate(-0.48);
+  const band = ctx.createLinearGradient(0, -height * 0.24, 0, height * 0.24);
+  band.addColorStop(0, "rgba(80,70,150,0)");
+  band.addColorStop(0.32, "rgba(110,96,180,0.10)");
+  band.addColorStop(0.5, "rgba(205,186,255,0.16)");
+  band.addColorStop(0.68, "rgba(90,130,190,0.10)");
+  band.addColorStop(1, "rgba(50,50,110,0)");
+  ctx.fillStyle = band;
+  ctx.fillRect(-width, -height * 0.24, width * 2, height * 0.48);
+  ctx.restore();
+
+  // 超低透明度星云叠层，避免出现明显圆斑
+  [[0.30, 0.30, "#7b5cff", 0.055], [0.72, 0.68, "#3a8fd0", 0.045], [0.5, 0.5, "#ff7fc0", 0.03]].forEach(([rx, ry, color, alpha]) => {
+    const neb = ctx.createRadialGradient(width * rx, height * ry, 2, width * rx, height * ry, Math.max(width, height) * 0.62);
+    neb.addColorStop(0, color);
+    neb.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = neb;
+    ctx.fillRect(0, 0, width, height);
+  });
+  ctx.globalAlpha = 1;
+
+  const rand = (seed) => {
+    const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+    return value - Math.floor(value);
+  };
+  ctx.globalCompositeOperation = "lighter";
+  const star = (x, y, radius, color, alpha, flare) => {
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    if (flare) {
+      ctx.globalAlpha = alpha * 0.45;
+      ctx.fillRect(x - radius * 4, y - 0.4, radius * 8, 0.8);
+      ctx.fillRect(x - 0.4, y - radius * 4, 0.8, radius * 8);
+    }
+  };
+
+  // 远景小星
+  for (let i = 0; i < 260; i += 1) {
+    const x = rand(i + 1) * width;
+    const y = rand(i + 1000) * height;
+    const radius = 0.35 + rand(i + 2000) * 0.65;
+    const twinkle = 0.28 + 0.5 * Math.abs(Math.sin(now / 1500 + i * 1.7));
+    const color = i % 9 === 0 ? "#ffd9f0" : (i % 6 === 0 ? "#bcd8ff" : "#ffffff");
+    star(x, y, radius, color, twinkle, false);
+  }
+  // 中景星
+  for (let i = 0; i < 70; i += 1) {
+    const x = rand(i + 3000) * width;
+    const y = rand(i + 4000) * height;
+    const radius = 0.8 + rand(i + 5000) * 0.8;
+    const twinkle = 0.45 + 0.5 * Math.abs(Math.sin(now / 1200 + i * 2.1));
+    star(x, y, radius, i % 5 === 0 ? "#cfe4ff" : "#ffffff", twinkle, false);
+  }
+  // 银河带里的密集星点
+  for (let i = 0; i < 95; i += 1) {
+    const t = rand(i + 6000);
+    const offset = (rand(i + 7000) - 0.5) * height * 0.16;
+    const x = t * width;
+    const y = height * 0.72 - t * height * 0.44 + offset;
+    const radius = 0.4 + rand(i + 8000) * 0.7;
+    const twinkle = 0.3 + 0.5 * Math.abs(Math.sin(now / 1300 + i));
+    star(x, y, radius, "#e9e4ff", twinkle, false);
+  }
+  // 少量亮星，带十字星芒
+  for (let i = 0; i < 14; i += 1) {
+    const x = rand(i + 9000) * width;
+    const y = rand(i + 9500) * height;
+    const radius = 1.1 + rand(i + 9900) * 1.1;
+    const twinkle = 0.55 + 0.45 * Math.abs(Math.sin(now / 1700 + i * 2.3));
+    star(x, y, radius, i % 3 === 0 ? "#ffe4f2" : "#ffffff", twinkle, i % 2 === 0);
+  }
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
 }
 
 function relThemeColor() {
@@ -770,11 +895,9 @@ function buildGraph(items) {
     if (!a || !b) return;
     if (!nodes.has(a)) nodes.set(a, { id: a, name: edge.a_name || a, relation: "", degree: 0 });
     if (!nodes.has(b)) nodes.set(b, { id: b, name: edge.b_name || b, relation: "", degree: 0 });
-    // 画像里手设的关系优先，其次才是关系边自己的 relation；
-    // 统一折算成五档，免得数据面板和陪伴面板显示两套词。
-    const relation = neuronTier(edge.profile_relation || edge.relation || "普通");
+    const relation = edge.relation || "朋友";
     edges.push({ a, b, relation });
-    const rank = REL_RANK[relation] || 2;
+    const rank = REL_RANK[relation] || 3;
     [a, b].forEach((id) => {
       const node = nodes.get(id);
       node.degree += 1;
@@ -797,13 +920,21 @@ function buildGraph(items) {
   return { nodes: list, edges, index: nodes, radius: shell };
 }
 
+/* 两两斥力是 O(n²)，而且这段跑在主线程上：节点一多，打开关系页会直接卡住。
+   PAIR_BUDGET 是「一轮最多算多少对」的预算，超了就按步长抽样——布局会糙一点，
+   但不会把面板冻住（200 节点以内仍然是全量对算，行为不变）。 */
+const SETTLE_PAIR_BUDGET = 120000;
+
 function settleGraph(graph, iterations) {
   const nodes = graph.nodes;
   const count = nodes.length;
+  const pairs = (count * (count - 1)) / 2;
+  // 抽样按「每隔 stride 个节点算一次」，所以对数约除以 stride：stride = pairs / 预算
+  const stride = pairs > SETTLE_PAIR_BUDGET ? Math.ceil(pairs / SETTLE_PAIR_BUDGET) : 1;
   for (let step = 0; step < iterations; step += 1) {
     for (let i = 0; i < count; i += 1) {
       const a = nodes[i];
-      for (let j = i + 1; j < count; j += 1) {
+      for (let j = i + 1; j < count; j += stride) {
         const b = nodes[j];
         let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
         const dist2 = dx * dx + dy * dy + dz * dz || 0.01;
@@ -859,61 +990,81 @@ function projectGraph(graph, camera, width, height) {
     node.pscale = t;
     node.pdepth = z2;
   });
+  // 屏幕空间轻微滚转：只有两个节点上下排列时，单靠 yaw 看不出在转
+  const roll = camera.roll || 0;
+  if (Math.abs(roll) > 0.0001) {
+    const cosR = Math.cos(roll), sinR = Math.sin(roll);
+    graph.nodes.forEach((node) => {
+      const dx = node.px - width / 2, dy = node.py - height / 2;
+      node.px = width / 2 + dx * cosR - dy * sinR;
+      node.py = height / 2 + dx * sinR + dy * cosR;
+    });
+  }
 }
 
-function drawGraph(ctx, graph, width, height, camera, hoverId, labelColor) {
-  ctx.clearRect(0, 0, width, height);
-  // 中心一点粉色氛围光，和陪伴面板一致
-  const halo = ctx.createRadialGradient(width / 2, height / 2, 8, width / 2, height / 2, Math.max(width, height) * 0.55);
-  halo.addColorStop(0, "rgba(212,87,138,0.06)");
-  halo.addColorStop(1, "rgba(212,87,138,0)");
-  ctx.fillStyle = halo;
-  ctx.fillRect(0, 0, width, height);
+function drawGraph(ctx, graph, width, height, camera, hoverId, labelColor, now) {
+  drawStarfield(ctx, width, height, now || 0);
 
   projectGraph(graph, camera, width, height);
   const activeId = hoverId || window.__graphActive || "";
   const ordered = graph.nodes.slice().sort((a, b) => b.pdepth - a.pdepth);
 
-  // 远的线更淡、近的更亮，转起来才有纵深
+  // 远的线更淡、近的更亮；高亮时加同色辉光
   graph.edges.forEach((edge) => {
     const a = graph.index.get(edge.a), b = graph.index.get(edge.b);
     if (!a || !b) return;
     const depth = (a.pdepth + b.pdepth) / 2;
     const near = activeId && (edge.a === activeId || edge.b === activeId);
-    const base = 0.05 + 0.2 * (1 - Math.min(1, Math.max(0, (depth + 180) / 360)));
-    ctx.strokeStyle = relColor(edge.relation);
-    ctx.globalAlpha = near ? 0.9 : base;
-    ctx.lineWidth = near ? 1.8 : 0.8;
+    const base = 0.18 + 0.38 * (1 - Math.min(1, Math.max(0, (depth + 180) / 360)));
+    const color = relGlowColor(edge.relation);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = near ? 12 : 4;
+    ctx.globalAlpha = near ? 0.8 : Math.min(0.55, base);
+    ctx.lineWidth = near ? 1.9 : 0.9;
     ctx.beginPath();
     ctx.moveTo(a.px, a.py);
     ctx.lineTo(b.px, b.py);
     ctx.stroke();
+    ctx.restore();
   });
   ctx.globalAlpha = 1;
 
-  // 节点：白心 + 关系色描边 + 一圈辉光，像神经元
+  // 节点：柔光小点，不再是刺眼的粉色大球
   ordered.forEach((node) => {
     const active = node.id === activeId;
     const scale = Math.max(0.45, node.pscale);
-    const radius = (active ? 9 : node.id === "bot" ? 7.5 : 5.5) * scale;
-    const color = node.id === "bot" ? "#e06a9a" : relColor(node.relation);
-    const glow = ctx.createRadialGradient(node.px, node.py, 0, node.px, node.py, radius * 3.4);
+    const radius = (active ? 8.5 : node.id === "bot" ? 7 : 5) * scale;
+    const color = node.id === "bot" ? "#ff7fb5" : relGlowColor(node.relation);
+    const glow = ctx.createRadialGradient(node.px, node.py, 0, node.px, node.py, radius * 3.2);
     glow.addColorStop(0, color);
-    glow.addColorStop(0.35, color);
-    glow.addColorStop(1, "rgba(255,255,255,0)");
-    ctx.globalAlpha = active ? 0.6 : 0.32;
+    glow.addColorStop(0.4, color);
+    glow.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.globalAlpha = active ? 0.45 : 0.28;
     ctx.fillStyle = glow;
     ctx.beginPath();
-    ctx.arc(node.px, node.py, radius * 3.4, 0, Math.PI * 2);
+    ctx.arc(node.px, node.py, radius * 3.2, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1;
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = active ? 14 : 8;
     ctx.beginPath();
-    ctx.fillStyle = active ? "#d4578a" : "#fff";
+    ctx.fillStyle = active ? "#ffe3ee" : "#fff8fc";
     ctx.strokeStyle = color;
-    ctx.lineWidth = active ? 2.2 : 1.2;
+    ctx.lineWidth = active ? 2 : 1.2;
     ctx.arc(node.px, node.py, radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
+    ctx.restore();
+    ctx.globalAlpha = active ? 0.45 : 0.28;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(node.px, node.py, radius + 3 * scale, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
   });
 
   // 标签只给关键的：bot、悬停的、以及关系最近 / 连接最多的十几个，避免糊成一团
@@ -925,9 +1076,12 @@ function drawGraph(ctx, graph, width, height, camera, hoverId, labelColor) {
   ctx.textAlign = "center";
   labelNodes.forEach((node) => {
     const label = node.name.length > 8 ? node.name.slice(0, 8) + "…" : node.name;
-    ctx.globalAlpha = node.id === activeId || node.id === "bot" ? 1 : 0.72;
-    ctx.fillStyle = labelColor;
+    ctx.globalAlpha = node.id === activeId || node.id === "bot" ? 1 : 0.85;
+    ctx.shadowColor = "rgba(0,0,0,0.85)";
+    ctx.shadowBlur = 5;
+    ctx.fillStyle = "#f6efff";
     ctx.fillText(label, node.px, node.py + 18 * Math.max(0.6, node.pscale));
+    ctx.shadowBlur = 0;
   });
   ctx.globalAlpha = 1;
 }
@@ -942,6 +1096,8 @@ function renderGraph(items) {
   const graph = buildGraph(items || []);
   graphState = graph;
   relHoverId = "";
+  const autoBox = document.getElementById("relAuto");
+  relCamera.auto = autoBox ? !!autoBox.checked : true;
 
   const empty = (message) => {
     const width = Math.max(1, canvas.clientWidth || 320);
@@ -951,7 +1107,7 @@ function renderGraph(items) {
     const scale = window.devicePixelRatio || 1;
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = "#9a8fa3";
+    ctx.fillStyle = "#cbbfe0";
     ctx.font = "12px system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(message, width / 2, height / 2);
@@ -968,8 +1124,9 @@ function renderGraph(items) {
   settleGraph(graph, iterations);
 
   if (legend) {
+    const kinds = [...new Set(graph.edges.map((edge) => edge.relation))];
     legend.textContent = "";
-    NEURON_TIERS.forEach((kind) => {
+    kinds.forEach((kind) => {
       const span = document.createElement("span");
       span.style.cssText = "display:inline-block;margin-right:10px";
       const dot = document.createElement("i");
@@ -1007,10 +1164,13 @@ function renderGraph(items) {
     }
     fit();
     if (width <= 0) { relGraphRaf = requestAnimationFrame(frame); return; }
-    if (relCamera.auto && !canvas.__relDragging) relCamera.yaw += 0.0016;
+    if (relCamera.auto && !canvas.__relDragging) {
+      relCamera.yaw += 0.0016;
+      relCamera.roll = 0.16 * Math.sin(now / 4200);
+    }
     if (!lastDraw || now - lastDraw >= 32) {
       lastDraw = now;
-      drawGraph(ctx, graph, width, height, relCamera, relHoverId, labelColor);
+      drawGraph(ctx, graph, width, height, relCamera, relHoverId, labelColor, now);
     }
     relGraphRaf = requestAnimationFrame(frame);
   };
@@ -1062,8 +1222,12 @@ function renderGraph(items) {
     if (event && (canvas.__relMoved || 0) < 4) {
       const hit = pick(event);
       window.__graphActive = hit ? hit.id : "";
+      if (hit) openRelNode(hit.id);
     }
-    canvas.__relIdle = setTimeout(() => { relCamera.auto = true; }, 4000);
+    canvas.__relIdle = setTimeout(() => {
+      const box = document.getElementById("relAuto");
+      relCamera.auto = box ? !!box.checked : true;
+    }, 1800);
   };
   canvas.onpointerup = endDrag;
   canvas.onpointercancel = endDrag;
@@ -1073,7 +1237,7 @@ function renderGraph(items) {
     relCamera.distance = Math.max(-220, Math.min(500, relCamera.distance + event.deltaY * 0.4));
   };
   canvas.ondblclick = () => {
-    relCamera.yaw = 0.35; relCamera.pitch = -0.2; relCamera.distance = 0;
+    relCamera.yaw = 0.35; relCamera.pitch = -0.2; relCamera.roll = 0; relCamera.distance = 0;
     relCamera.auto = true;
   };
 
@@ -1085,6 +1249,7 @@ async function loadRelations() {
   try {
     const data = objectFrom(await call("relations")) || {};
     const items = Array.isArray(data.items) ? data.items : [];
+    relItems = items;
     window.__graphActive = "";
     renderGraph(items);
   } catch (error) {
@@ -1092,6 +1257,109 @@ async function loadRelations() {
     if (box) box.textContent = "读取失败：" + error.message;
   }
 }
+
+function openRelNode(id) {
+  const key = String(id || "");
+  const edges = (relItems || []).filter((edge) => String(edge.a_uid) === key || String(edge.b_uid) === key);
+  const first = edges[0] || {};
+  const name = (String(first.a_uid) === key ? first.a_name : first.b_name) || key;
+  relSelectedEdge = edges[0] || null;
+  const title = document.getElementById("relNodeTitle");
+  const sub = document.getElementById("relNodeSub");
+  const box = document.getElementById("relNodeEdges");
+  if (!title || !sub || !box) return;
+  title.textContent = name;
+  sub.textContent = "UID：" + key + " · 关系 " + edges.length + " 条";
+  box.textContent = "";
+  if (!edges.length) {
+    box.innerHTML = '<div class="hint">这个节点没有关系边。</div>';
+  }
+  edges.forEach((edge, index) => {
+    const row = document.createElement("label");
+    row.className = "rel-node-edge";
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "relNodeEdge";
+    radio.checked = index === 0;
+    radio.addEventListener("change", () => { relSelectedEdge = edge; });
+    const left = document.createElement("span");
+    left.className = "edge-left";
+    left.textContent = edge.a_name || edge.a_uid || "";
+    const center = document.createElement("span");
+    center.className = "edge-center";
+    const relation = document.createElement("span");
+    relation.className = "edge-relation";
+    relation.textContent = edge.relation || "朋友";
+    const arrow = document.createElement("span");
+    arrow.className = "edge-arrow";
+    arrow.textContent = "↔";
+    center.appendChild(relation);
+    center.appendChild(arrow);
+    if (edge.note) {
+      const note = document.createElement("span");
+      note.className = "edge-note";
+      note.textContent = edge.note;
+      center.appendChild(note);
+    }
+    const right = document.createElement("span");
+    right.className = "edge-right";
+    right.textContent = edge.b_name || edge.b_uid || "";
+    row.appendChild(radio); row.appendChild(left); row.appendChild(center); row.appendChild(right);
+    box.appendChild(row);
+  });
+  const modal = document.getElementById("relNodeModal");
+  if (modal) modal.hidden = false;
+}
+
+async function deleteRelEdge() {
+  if (!relSelectedEdge) {
+    toast("先选中一条关系", true);
+    return;
+  }
+  const edge = relSelectedEdge;
+  const left = edge.a_name || edge.a_uid || "";
+  const right = edge.b_name || edge.b_uid || "";
+  // 删关系会两边一起删（想记 + 陪伴），点错一次就找不回来，先问一句
+  const ask = "确定删除「" + left + " ↔ " + right + "（" + (edge.relation || "朋友") + "）」这条关系吗？\n想记和陪伴两边都会删掉。";
+  if (typeof window !== "undefined" && typeof window.confirm === "function" && !window.confirm(ask)) {
+    return;
+  }
+  try {
+    const res = await call("relation/delete", {
+      a_uid: edge.a_uid, b_uid: edge.b_uid, confirm: 1,
+    });
+    const data = objectFrom(res) || {};
+    if (res && res.code !== undefined && Number(res.code) !== 0) {
+      toast((res && res.msg) || "删除失败", true);
+      return;
+    }
+    toast(((res && res.msg) || "已删除") + (data.warning ? "（" + data.warning + "）" : ""));
+    const modal = document.getElementById("relNodeModal");
+    if (modal) modal.hidden = true;
+    await loadRelations();
+  } catch (error) {
+    toast("删除失败：" + (error.message || error), true);
+  }
+}
+
+document.getElementById("relNodeClose").addEventListener("click", () => {
+  const modal = document.getElementById("relNodeModal");
+  if (modal) modal.hidden = true;
+});
+document.getElementById("relNodeModal").addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) event.currentTarget.hidden = true;
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    const modal = document.getElementById("relNodeModal");
+    if (modal) modal.hidden = true;
+  }
+});
+document.getElementById("relNodeDelete").addEventListener("click", deleteRelEdge);
+
+document.getElementById("relAuto").addEventListener("change", (event) => {
+  relCamera.auto = !!event.target.checked;
+});
 
 document.getElementById("btnRelReload").addEventListener("click", loadRelations);
 

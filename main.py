@@ -83,7 +83,7 @@ else:  # 运行时：包模式优先，按文件直接加载时退回绝对导�
                 return ""
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.7.6"
+PLUGIN_VERSION = "2.7.7"
 DEFAULT_BOT_ID = "default"
 
 
@@ -850,7 +850,37 @@ class AmoDataPlugin(Star):
             bot_id = str(found.get("bot_id") or bot_id)
         if str(payload.get("confirm") or "") not in ("1", "true", "yes"):
             return {"code": 1, "msg": "删除需要确认：confirm=1"}
-        return {"code": 0, "data": self.store.delete_profile(bot_id, uid), "msg": "已删除"}
+        logger.info("[amo_data] 删除画像请求: uid=%s bot=%s" % (uid, bot_id or "-"))
+        counts = self.store.delete_profile(bot_id, uid)
+        # 只删数据侧没用：陪伴插件（amo）本地还留着画像，它每 10 分钟会把
+        # 「本地有、数据侧缺」的画像重新推回来，面板上看起来就是「删不掉」。
+        self._forget_in_amo(uid)
+        return {"code": 0, "data": counts, "msg": "已删除"}
+
+    def _amo_plugin(self):
+        """拿陪伴插件实例（没装/没加载就返回 None），用于同步删除画像。"""
+        try:
+            getter = getattr(self.context, "get_registered_star", None)
+            meta = getter("Astrbot_Amo_forever") if callable(getter) else None
+            return getattr(meta, "star_cls", None) if meta is not None else None
+        except Exception as exc:
+            logger.debug("[amo_data] 查找陪伴插件失败: %s" % exc)
+            return None
+
+    def _forget_in_amo(self, uid: str) -> bool:
+        """把画像也从陪伴插件本地删掉，否则它 10 分钟一次的画像对账会把它推回来。"""
+        amo = self._amo_plugin()
+        db = getattr(amo, "db", None) if amo is not None else None
+        remover = getattr(db, "delete_profile", None)
+        if not callable(remover):
+            return False
+        try:
+            remover(str(uid))
+            logger.info("[amo_data] 已同步删除陪伴侧本地画像: %s" % uid)
+            return True
+        except Exception as exc:
+            logger.warning("[amo_data] 同步删除陪伴侧画像失败(%s): %s" % (uid, exc))
+            return False
 
     async def api_persons(self):
         payload = await self._body()
@@ -1074,9 +1104,14 @@ class AmoDataPlugin(Star):
                 bot_id, query=query, umo=umo, uid=uid, limit=limit
             )
             return {"code": 0, "data": result}
+        try:
+            summary_limit = max(20, min(200, int(limit)))
+        except (TypeError, ValueError):
+            summary_limit = 100
         return {"code": 0, "data": {
-            "items": self.store.list_messages(
-                bot_id, umo, limit, pid=pid, platform=platform, uid=uid
+            "items": self.store.list_messages_grouped(
+                bot_id, umo, limit, pid=pid, platform=platform, uid=uid,
+                summary_limit=summary_limit,
             )
         }}
 

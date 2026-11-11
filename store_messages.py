@@ -325,6 +325,24 @@ class MessagesMixin(_StoreBase):
         return rows[-limit:]
     def list_messages(self, bot_id: str, umo: str = "", limit: int = 200,
                       pid: int = 0, platform: str = "", uid: str = "") -> List[Dict[str, Any]]:
+        """聊天 + 摘要混排，按真实聊天时间倒序（时间回看/召回的候选池用）。"""
+        return self._list_rows(bot_id, umo, limit, pid, platform, uid, role=None)
+
+    def list_messages_grouped(self, bot_id: str, umo: str = "", limit: int = 200,
+                              pid: int = 0, platform: str = "", uid: str = "",
+                              summary_limit: int = 100) -> List[Dict[str, Any]]:
+        """面板「聊天」页用：聊天按时间倒序在前，摘要按时间倒序统一放最后。
+
+        以前摘要和聊天混在一个 LIMIT 里按 created_at 排，摘要都是几天前的，
+        最近 200/300 条全是聊天 → 摘要被挤出窗口，面板上几乎看不到摘要。
+        现在分两次查：聊天取 limit 条，摘要另取 summary_limit 条拼在后面。
+        """
+        chats = self._list_rows(bot_id, umo, limit, pid, platform, uid, role="chat")
+        summaries = self._list_rows(bot_id, umo, summary_limit, pid, platform, uid, role="summary")
+        return chats + summaries
+
+    def _list_rows(self, bot_id: str, umo: str, limit: int, pid: int, platform: str,
+                   uid: str, role: str | None) -> List[Dict[str, Any]]:
         where, params = _bot_filter(bot_id)
         sql = ("SELECT id, umo, uid, name, role, content, created_at, compressed, "
                "platform, pid FROM messages WHERE 1=1" + where)
@@ -340,6 +358,10 @@ class MessagesMixin(_StoreBase):
         if uid:
             sql += " AND uid=?"
             params.append(str(uid))
+        if role == "summary":
+            sql += " AND role='summary'"
+        elif role == "chat":
+            sql += " AND role<>'summary'"
         # 按**真实聊天时间**倒序：摘要行是事后补写的（id 更大但 created_at 更早），
         # 只按 id 排会把「2026-11-08 的摘要」顶到最新聊天的上面，面板看着像时间乱序。
         sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
