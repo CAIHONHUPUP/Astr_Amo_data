@@ -83,7 +83,7 @@ else:  # 运行时：包模式优先，按文件直接加载时退回绝对导�
                 return ""
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.6.0"
+PLUGIN_VERSION = "2.6.1"
 DEFAULT_BOT_ID = "default"
 
 # 画像关系（陪伴那套）→ 关系网词表
@@ -1052,6 +1052,32 @@ class AmoDataPlugin(Star):
         )
         return {"code": 0 if ok else 1, "msg": "已保存" if ok else "保存失败"}
 
+    def _amo_plugin(self):
+        """找陪伴插件实例：删关系时两边一起删，避免它下次同步又写回来。"""
+        def pick(meta):
+            for attr in ("star_cls", "instance", "star", "plugin"):
+                value = getattr(meta, attr, None)
+                if value is not None and hasattr(value, "db"):
+                    return value
+            return None
+
+        try:
+            star = pick(self.context.get_registered_star("Astrbot_Amo_forever"))
+            if star is not None:
+                return star
+        except Exception:
+            pass
+        try:
+            for meta in self.context.get_all_stars():
+                marker = (getattr(meta, "name", "") or "") + " " + (getattr(meta, "module_path", "") or "")
+                if "amo_forever" in marker.lower():
+                    star = pick(meta)
+                    if star is not None:
+                        return star
+        except Exception:
+            pass
+        return None
+
     async def api_relation_delete(self):
         payload = await self._body()
         bot_id = self._bot_id(payload, write=True)
@@ -1060,7 +1086,19 @@ class AmoDataPlugin(Star):
         if not a_uid or not b_uid:
             return {"code": 1, "msg": "需要两个 uid"}
         ok = self.store.delete_relation(bot_id, a_uid, b_uid)
-        return {"code": 0 if ok else 1, "msg": "已删除" if ok else "没有这条关系"}
+        synced = False
+        amo = self._amo_plugin()
+        if amo is not None:
+            try:
+                db = getattr(amo, "db", None)
+                if db is not None and hasattr(db, "delete_relation"):
+                    db.delete_relation(a_uid, b_uid)
+                    synced = True
+            except Exception as exc:
+                logger.debug("[amo_data] 同步删除陪伴关系失败: %s" % exc)
+        message = "已删除" if ok else "没有这条关系"
+        warning = "" if synced else "没找到陪伴插件，可能还会被同步回来"
+        return {"code": 0 if ok else 1, "msg": message, "data": {"synced": synced, "warning": warning}}
 
     async def api_messages(self):
         payload = await self._body()
