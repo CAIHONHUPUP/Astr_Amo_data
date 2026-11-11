@@ -2,7 +2,7 @@ name: Astr_Amo_data
 display_name: 我想永远记住你
 desc: 我想永远记住你：为陪伴插件配套的轻量记忆与数据后端（画像 / 记忆 / 关系网 / 日程缓存），画像可随时编辑
 short_desc: 我想永远记住你
-version: 2.5.9
+version: 2.6.0
 author: 墨辞烟
 astrbot_version: ">=4.5.7"
 repo: https://github.com/GM888888456/Astrbot_Amo_data
