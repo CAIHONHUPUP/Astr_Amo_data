@@ -83,8 +83,17 @@ else:  # 运行时：包模式优先，按文件直接加载时退回绝对导�
                 return ""
 
 PLUGIN_NAME = "Astr_Amo_data"
-PLUGIN_VERSION = "2.5.0"
+PLUGIN_VERSION = "2.5.9"
 DEFAULT_BOT_ID = "default"
+
+# 画像关系（陪伴那套）→ 关系网词表
+PROFILE_TO_NETWORK = {
+    "仇恨": "仇人",
+    "抵触": "陌生人",
+    "普通": "朋友",
+    "熟识": "熟人",
+    "相恋": "恋人",
+}
 
 
 class MemoryAPI:
@@ -911,7 +920,7 @@ class AmoDataPlugin(Star):
         uid = str(payload.get("uid") or "").strip()
         query = str(payload.get("q") or "").strip()
         if query:
-            items = self.store.recall(bot_id, uid, query, 100) if uid else []
+            items = await asyncio.to_thread(self.store.recall, bot_id, uid, query, 100) if uid else []
         else:
             items = self.store.list_memories(bot_id, uid, 200)
         return {"code": 0, "data": {"items": items}}
@@ -983,13 +992,44 @@ class AmoDataPlugin(Star):
         items = self.store.list_relations(bot_id, uid)
         # 面板上直接显名字，不要只给一串 uid
         names = {}
+        profiles = []
         try:
-            for row in self.store.list_profiles(bot_id, "", 500):
+            profiles = self.store.list_profiles(bot_id, "", 500)
+            for row in profiles:
                 key = str(row.get("uid") or "")
                 if key:
                     names[key] = str(row.get("name") or row.get("alias") or "")
         except Exception:
             names = {}
+        names.setdefault("bot", "你")
+
+        # 画像里显式设过的关系也进图：不然把对方设成「恋人」，
+        # 图上还停在自动沉淀出来的「熟人」。
+        profile_rel = {}
+        for row in profiles:
+            key = str(row.get("uid") or "")
+            rel = PROFILE_TO_NETWORK.get(str(row.get("relation") or "").strip())
+            if key and rel:
+                profile_rel[key] = rel
+        if profile_rel:
+            pairs = {}
+            for item in items:
+                pairs[frozenset((str(item.get("a_uid") or ""), str(item.get("b_uid") or "")))] = item
+            for key, rel in profile_rel.items():
+                if key in ("bot", "self"):
+                    continue
+                item = pairs.get(frozenset(("bot", key)))
+                if item is not None:
+                    item["relation"] = rel
+                    item["note"] = "画像：关系字段"
+                    item["profile_relation"] = rel
+                else:
+                    items.append({
+                        "a_uid": "bot", "b_uid": key, "relation": rel,
+                        "note": "画像：关系字段", "profile_relation": rel,
+                        "a_name": names.get("bot"), "b_name": names.get(key) or key,
+                    })
+
         for item in items:
             for side in ("a", "b"):
                 key = str(item.get(side + "_uid") or "")

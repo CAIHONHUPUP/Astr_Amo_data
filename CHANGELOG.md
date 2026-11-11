@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.5.9（合并原作者 2.5.2 / 2.5.6 / 2.5.8 修复）
+
+### 关系图以画像为准
+
+- 画像里设了「相恋 / 恋人」，关系图不再停在自动沉淀的「熟人」；
+- `api_relations` 用画像关系覆盖同名自动边（`profile_relation`），缺边时补一条 `bot ↔ 对方`；
+- 关系词表做映射：相恋→恋人、熟识→熟人、仇恨→仇人、抵触→陌生人、普通→朋友。
+
+### 「昨天」按配置时区算
+
+- `store_messages._time_window` 原用 `datetime.now()`，跟服务器时区跑；
+  北京时间 00:00–08:00 问「昨天/今天/前天」会算到前一天；
+- 改走 `clock.now()`，窗口起止用 `_epoch()` 按配置时区换算。
+
+### 上架合规
+
+- `store_util` 的 logger 兜底不再回退内置 `logging`，改成 `_NullLogger`；
+- `api_memories` 的 `store.recall` 改成 `await asyncio.to_thread(...)`，不再同步阻塞事件循环。
+
 ## 未发布（基于 2.5.0）
 
 ### 覆盖率 68% → 85%：面板/命令 API 层补测

@@ -43,9 +43,15 @@ else:  # 运行时：包模式优先，按文件直接加载时退回绝对导�
     try:
         from astrbot.api import logger
     except Exception:  # 单测/纯逻辑场景允许脱离 AstrBot 运行
-        import logging
+        # 规范：logger 只能从 astrbot.api 导入，禁止回退内置 logging。
+        class _NullLogger:
+            def __getattr__(self, name):
+                def _noop(*args, **kwargs):
+                    return None
 
-        logger = logging.getLogger("amo_data")
+                return _noop
+
+        logger = _NullLogger()
 
 
 def _now() -> int:
