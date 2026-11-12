@@ -150,5 +150,22 @@
     "type": "int",
     "description": "备份保留份数",
     "default": 7
+  },
+  "summary_merge_max_chars": {
+    "type": "int",
+    "description": "摘要合并/拆分上限（字）",
+    "hint": "周整理把同一天摘要合并时的上限，也是长摘要拆分的目标长度。默认 800：超过就拆成多条，避免一条 4000 字摘要把注入预算（1200 字）吃光。",
+    "default": 800
+  },
+  "meta_query_fallback": {
+    "type": "bool",
+    "description": "「你还记得我吗」按重要度兜底",
+    "hint": "这类问题没有实词，关键词检索会返回 0 条。打开后在没有命中时按重要度+新鲜度给 2~3 条。",
+    "default": true
+  },
+  "meta_query_limit": {
+    "type": "int",
+    "description": "元问题兜底条数",
+    "default": 3
   }
 }

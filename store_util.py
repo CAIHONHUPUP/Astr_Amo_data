@@ -193,6 +193,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "embedding_backfill_limit": 200,   # 每次最多补多少条
     "recall_fts_enabled": False,       # 可选：FTS5 trigram 子串粗筛（默认关，见 CHANGELOG 实测）
     "recall_recent_pool": 600,         # 「最近活跃」这一层的上限，库大了不至于把几条热门记忆全捞进来
+    "summary_merge_max_chars": 800,    # 同天摘要合并上限；超过就拆条，别造 4000 字怪物
+    "meta_query_fallback": True,       # 「你还记得我吗」这类没有实词的查询按重要度兜底
+    "meta_query_limit": 3,             # 兜底最多给几条
 }
 
 

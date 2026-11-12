@@ -6,9 +6,10 @@ omit =
     __pycache__/*
     _test_tmp/*
     store_types.py
+    run_tests.py
 
 [report]
-# 类型检查之外再加覆盖率底线：补完 API 层测试后实测 85%，按 80% 卡住，只许往上调
-fail_under = 80
+# 类型检查之外再加覆盖率底线：补完 API 层测试后实测 90%，按 87% 卡住（对齐 LM 的 87%），只许往上调
+fail_under = 87
 show_missing = True
 skip_covered = True

@@ -48,14 +48,24 @@ class CompressionTests(unittest.TestCase):
         self.assertIn("旧消息", summaries[0]["content"])
 
     def test_memory_merge_over_budget_keeps_rows_active(self):
-        # 两段 3000 字摘要塞不进 4000 字：装不下的那几条不能标 merged（否则正文永远召不回来）
+        # 两段长摘要塞不进 4000 字：装不下的不能标 merged（否则正文永远召不回来）。
+        # 2.8 起先按 800 字拆条再合并，所以这里断言"正文不丢 + 没有超长行"。
+        # 注意 remember() 单条上限 2000 字（_clean），两段各 2000 字、合起来超预算。
         day = "2026-11-01"
         self.store.remember(BOT, UID, "%s %s" % (day, "甲" * 3000), kind="conversation_summary")
         self.store.remember(BOT, UID, "%s %s" % (day, "乙" * 3000), kind="conversation_summary")
         self.store.compress_memories(BOT, apply=True)
-        rows = self.store.list_memories(BOT, UID, limit=50)
-        active = [row for row in rows if (row.get("status") or "active") == "active"]
-        self.assertEqual(len(active), 2)
+        rows = self.store.conn.execute(
+            "SELECT id, content FROM memories WHERE bot_id=? AND uid=? "
+            "AND kind='conversation_summary' AND COALESCE(status,'active')='active' "
+            "ORDER BY id", (BOT, UID),
+        ).fetchall()
+        self.assertTrue(rows)
+        self.assertTrue(all(len(row["content"]) <= 800 for row in rows))
+        joined = "".join(row["content"] for row in rows)
+        # remember() 把单条截到 2000 字，两段各扣掉 "2026-11-01 " 前缀
+        self.assertEqual(joined.count("甲"), 1989)
+        self.assertEqual(joined.count("乙"), 1989)
 
 
 class NearDuplicateEquivalenceTests(unittest.TestCase):

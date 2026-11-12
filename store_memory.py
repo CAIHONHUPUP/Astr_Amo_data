@@ -98,6 +98,51 @@ else:  # 运行时：包模式优先，按文件直接加载时退回绝对导�
         )
 
 
+# 句子边界：中文句号/问号/叹号/分号/换行；用 lookbehind 保留分隔符，拼回去还是原文
+_SENTENCE_RE = re.compile(r"(?<=[。！？!?；;\n])")
+
+# 「你还记得我吗」这类没有实词的元问题：关键词闸门会一条都不给，
+# 这里单独兜底。只匹配"整句就是这些套话"的说法，避免把「你记得我生日吗」也兜进来。
+_META_PATTERNS = (
+    "记得我吗", "记得我么", "还记得我吗", "记得我是谁", "记得我是谁吗",
+    "记得什么", "记得啥", "记得哪些", "还记得什么", "都记得什么",
+    "知道我是谁", "了解我吗", "了解我多少",
+    "记得我说过什么", "我说过什么", "还记得我说过", "记得我的事",
+    "记得我们", "还记得我们",
+)
+
+
+def _is_meta_query(text: Any) -> bool:
+    body = re.sub(r"\s+", "", str(text or ""))
+    if not body:
+        return False
+    return any(word in body for word in _META_PATTERNS)
+
+
+def _split_long_text(text: Any, limit: int) -> List[str]:
+    """按句子边界把长文本切成 <= limit 的块；单句超长时硬切。拼回去不丢字。"""
+    body = str(text or "")
+    limit = int(limit or 0)
+    if limit <= 0 or len(body) <= limit:
+        return [body] if body else []
+    pieces: List[str] = []
+    buf = ""
+    for sentence in _SENTENCE_RE.split(body):
+        while len(sentence) > limit:
+            if buf:
+                pieces.append(buf)
+                buf = ""
+            pieces.append(sentence[:limit])
+            sentence = sentence[limit:]
+        if buf and len(buf) + len(sentence) > limit:
+            pieces.append(buf)
+            buf = ""
+        buf += sentence
+    if buf:
+        pieces.append(buf)
+    return [piece for piece in pieces if piece]
+
+
 if TYPE_CHECKING:
     from .store_types import StoreLike as _StoreBase
 else:  # 运行时用 object：协议里的声明不能进 MRO，否则会挡掉别的 mixin 的真实实现
@@ -451,9 +496,64 @@ class MemoryMixin(_StoreBase):
                 self.conn.commit()
         return {"candidate": len(ids), "archived": len(ids) if apply else 0,
                 "ids": ids[:50]}
+    def split_long_summaries(self, bot_id: str, max_chars: int = 0, apply: bool = True,
+                             limit: int = 200) -> Dict[str, Any]:
+        """把超过上限的摘要按句子拆成多条。
+
+        以前「同天摘要合并」上限是 4000 字，实际合出了 4011/4009/4000 字三条，
+        每条都超过 amo 的 1200 字注入预算——一条就把整轮记忆块吃光。这里按句子
+        边界拆成 <= max_chars 的块，正文一个字不丢。
+        """
+        cap = int(max_chars or self.setting("summary_merge_max_chars", 800) or 0)
+        if cap <= 0:
+            return {"summaries": 0, "created": 0, "applied": bool(apply)}
+        where, params = _bot_filter(bot_id)
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT id, bot_id, uid, content, kind, importance, created_at, last_hit_at, "
+                "COALESCE(scope,'private') AS scope, COALESCE(group_id,'') AS group_id "
+                "FROM memories WHERE 1=1" + where +
+                " AND COALESCE(status,'active')='active'"
+                " AND kind IN ('conversation_summary','daily_digest')"
+                " AND length(content)>? ORDER BY length(content) DESC LIMIT ?",
+                list(params) + [cap, max(1, int(limit))],
+            ).fetchall()
+        summaries = 0
+        created = 0
+        for row in rows:
+            pieces = _split_long_text(row["content"], cap)
+            if len(pieces) < 2:
+                continue
+            summaries += 1
+            if not apply:
+                created += len(pieces) - 1
+                continue
+            with self.lock:
+                self.conn.execute(
+                    "UPDATE memories SET content=? WHERE id=?",
+                    (pieces[0], int(row["id"])),
+                )
+                for piece in pieces[1:]:
+                    cur = self.conn.execute(
+                        "INSERT INTO memories(bot_id, uid, scope, group_id, kind, content, "
+                        "importance, hit_count, created_at, last_hit_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (str(row["bot_id"]), str(row["uid"]), str(row["scope"]),
+                         str(row["group_id"]), str(row["kind"]), piece,
+                         float(row["importance"] or 0.5), 0,
+                         int(row["created_at"] or _now()), int(row["last_hit_at"] or _now())),
+                    )
+                    new_id = int(cur.lastrowid or 0)
+                    created += 1
+                    if new_id:
+                        self._enqueue_embedding(new_id, piece)
+                self.conn.commit()
+            self._enqueue_embedding(int(row["id"]), pieces[0])
+        return {"summaries": summaries, "created": created, "applied": bool(apply)}
     def compress_memories(self, bot_id: str, apply: bool = True,
                           min_jaccard: float = 0.7, limit: int = 600) -> Dict[str, Any]:
-        """周度整理：同一天的摘要合并成一条，近重复记忆标成过期（不删数据）。"""
+        """周度整理：长摘要拆条、同一天摘要合并、近重复记忆标成过期（不删数据）。"""
+        cap = int(self.setting("summary_merge_max_chars", 800) or 0)
+        split_info = self.split_long_summaries(bot_id, cap, apply=bool(apply), limit=200)
         where, params = _bot_filter(bot_id)
         with self.lock:
             rows = self.conn.execute(
@@ -493,7 +593,7 @@ class MemoryMixin(_StoreBase):
                         absorbed.append(row)  # 正文已经在保留行里，标 merged 不会丢内容
                         continue
                     candidate = merged_text + "\n" + piece
-                    if len(candidate) > 4000:
+                    if len(candidate) > (cap or 4000):
                         break  # 超预算：这条和后面的都保持 active，绝不带病标 merged
                     merged_text = candidate
                     absorbed.append(row)
@@ -552,6 +652,8 @@ class MemoryMixin(_StoreBase):
             if apply and dedup:
                 self.conn.commit()
         return {"merged_summaries": merged, "merged_near_duplicates": dedup,
+                "split_summaries": split_info.get("summaries", 0),
+                "split_pieces": split_info.get("created", 0),
                 "applied": bool(apply)}
     def _substring_candidates(self, base, params, text, limit):
         """trigram FTS 子串粗筛；不可用/查询太短时返回 None（调用方退回 LIKE）。"""
@@ -599,6 +701,8 @@ class MemoryMixin(_StoreBase):
         bot_id, uid = str(bot_id), str(uid)
         limit = max(1, min(int(limit or 6), 100))
         text = _clean(query, 200)
+        meta_query = bool(text) and bool(self.setting("meta_query_fallback", True)) \
+            and _is_meta_query(text)
         now = _now()
         half_life_days = float(half_life_days if half_life_days is not None
                                else self.setting("forget_half_life_days", RECALL_HALF_LIFE_DAYS) or RECALL_HALF_LIFE_DAYS)
@@ -675,7 +779,10 @@ class MemoryMixin(_StoreBase):
             except Exception:
                 pass
         if not rows:
-            return []
+            # 「你还记得我吗」这种没有实词的元问题，关键词粗筛一条都进不来；
+            # 不兜底的话她会回「记得呀」但其实手上没有任何记忆。
+            return self._meta_fallback(bot_id, uid, scope, group_id, now,
+                                       half_life_days, importance_decay) if meta_query else []
 
         contents = [str(r["content"] or "") for r in rows]
         q_tokens = _recall_tokens(text) if text else []
@@ -821,6 +928,9 @@ class MemoryMixin(_StoreBase):
             items.append(item)
             selected_tokens.append(toks)
 
+        if not items and meta_query:
+            items = self._meta_fallback(bot_id, uid, scope, group_id, now,
+                                       half_life_days, importance_decay)
         if items:
             with self.lock:
                 self.conn.executemany(
@@ -829,6 +939,63 @@ class MemoryMixin(_StoreBase):
                 )
                 self.conn.commit()
         return items
+    def _meta_fallback(self, bot_id: str, uid: str, scope: str, group_id: str,
+                       now: int, half_life_days: float, importance_decay: float) -> List[Dict[str, Any]]:
+        """元问题兜底：没有关键词可匹配时，按「重要度 + 新鲜度」给几条最值得说的。
+
+        「你还记得我吗 / 你记得什么」这类问题本身没有实词，关键词闸门会返回 0 条，
+        表现就是她嘴上说记得、其实一条记忆都没拿到。这里只在这种查询上兜底，
+        正常提问（带人名/事件/时间）仍然严格走相关性，不会被兜底污染。
+        """
+        if not self.setting("meta_query_fallback", True):
+            return []
+        limit = max(1, min(int(self.setting("meta_query_limit", 3) or 3), 10))
+        where = "bot_id=? AND uid=? AND COALESCE(status,'active')='active'"
+        params: List[Any] = [str(bot_id), str(uid)]
+        if scope in ("private", "group"):
+            where += " AND scope=?"
+            params.append(scope)
+        if group_id:
+            where += " AND group_id=?"
+            params.append(str(group_id))
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT id, content, kind, importance, created_at, last_hit_at, hit_count, scope, group_id "
+                "FROM memories WHERE " + where +
+                " ORDER BY importance DESC, last_hit_at DESC LIMIT ?",
+                params + [limit * 4],
+            ).fetchall()
+        picked: List[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                imp = max(0.0, min(1.0, float(row["importance"] or 0.5)))
+            except (TypeError, ValueError):
+                imp = 0.5
+            fresh = _freshness(row["last_hit_at"] or row["created_at"], now, half_life_days)
+            weight = max(0.0, min(0.9, float(importance_decay or 0.0)))
+            imp_eff = imp * (1.0 - weight) + imp * weight * fresh
+            try:
+                hits = int(row["hit_count"] or 0)
+            except (TypeError, ValueError):
+                hits = 0
+            hit_boost = min(1.0, math.log1p(hits) / math.log1p(10)) if hits > 0 else 0.0
+            score = 0.65 * imp_eff + 0.35 * (0.6 * fresh + 0.4 * hit_boost)
+            item = dict(row)
+            item["score"] = round(score, 4)
+            item["matched_terms"] = 0
+            item["vec_score"] = 0.0
+            item["meta_fallback"] = True
+            picked.append(item)
+            if len(picked) >= limit:
+                break
+        if picked:
+            with self.lock:
+                self.conn.executemany(
+                    "UPDATE memories SET hit_count=hit_count+1, last_hit_at=? WHERE id=?",
+                    [(now, item["id"]) for item in picked],
+                )
+                self.conn.commit()
+        return picked
     def list_memories(self, bot_id: str, uid: str = "", limit: int = 100) -> List[Dict[str, Any]]:
         where, params = _bot_filter(bot_id)
         sql = (

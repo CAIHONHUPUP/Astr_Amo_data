@@ -209,7 +209,9 @@ class MessagesMixin(_StoreBase):
         # 上周三 / 这周五 / 礼拜天
         m = re.search(r"(上上|上|这|本)?\s*(周|星期|礼拜)\s*([一二三四五六日天1-7])", text)
         if m:
-            idx = cls._cn_int(m.group(3)) - 1  # 周一=0
+            raw = m.group(3)
+            # 周日/周天/礼拜天：_cn_int 只认数字和「一二三…」，这里补上「日/天 = 7」
+            idx = (7 if raw in ("日", "天") else cls._cn_int(raw)) - 1  # 周一=0
             if 0 <= idx <= 6:
                 monday = today - _td(days=today.weekday())
                 target = monday + _td(days=idx)
